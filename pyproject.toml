@@ -22,4 +22,5 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.51.0",
+    "greenlet>=3.5.3",
 ]

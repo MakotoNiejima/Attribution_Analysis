@@ -29,23 +29,29 @@ FastAPI
 ```
 
 RAG 是补充背景资料的可选能力，数据结论仍以分析内核生成的结构化证据为准。
+文档检索默认使用 NumPy 精确内积检索；只有在已验证 FAISS 与当前平台兼容时，
+才在 `.env` 中设置 `RAG_VECTOR_BACKEND=faiss`。
 
 ## 本地启动
 
 1. 复制 `.env.example` 为 `.env`，填写数据库与模型配置。
 2. 安装依赖：`uv sync`
-3. 初始化业务数据：
+3. 如果还没有业务数据，初始化并导入演示数据：
 
-```powershell
+```bash
 uv run python datacompose/init_db.py
 uv run python datacompose/02_seed_data.py
 uv run python datacompose/import_data.py
 ```
 
+已有 `sessions`、`visit_events`、`cart_events`、`orders` 和
+`business_events` 等业务表时跳过此步。后端首次启动会自动创建用户、
+会话、任务、消息、附件和日志等工作台表。
+
 4. 启动后端：`uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
 5. 另开终端启动前端：
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
@@ -55,10 +61,10 @@ npm run dev
 
 ## 验证
 
-```powershell
-$env:PYTHONPATH='D:\dev\归因分析'
-python -m pytest -q
-cd frontend; npm run build
+```bash
+uv run python -m pytest -q
+cd frontend
+npm run build
 ```
 
 主要接口、WebSocket 消息约定和运行顺序见 [docs/API.md](docs/API.md)，两个演示场景的操作与验收点见 [docs/DEMO_SCENARIOS.md](docs/DEMO_SCENARIOS.md)。

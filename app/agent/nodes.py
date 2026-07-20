@@ -36,6 +36,32 @@ from app.analysis_core.service import (
 import app.config as app_config
 
 
+SUPPORTED_METRIC = "order_conversion_rate"
+_METRIC_ALIASES = {
+    "order_conversion_rate": SUPPORTED_METRIC,
+    "conversion_rate": SUPPORTED_METRIC,
+    "下单转化率": SUPPORTED_METRIC,
+    "有效下单转化率": SUPPORTED_METRIC,
+}
+_UNSUPPORTED_METRIC_KEYWORDS = {
+    "销售额": "销售额",
+    "营收": "营收",
+    "收入": "收入",
+    "gmv": "GMV",
+    "roi": "ROI",
+    "客单价": "客单价",
+    "复购": "复购率",
+    "库存": "库存",
+    "周转率": "周转率",
+    "周转": "周转率",
+}
+
+
+def _unsupported_metric_label(question: str) -> str | None:
+    normalized = question.lower()
+    return next((label for keyword, label in _UNSUPPORTED_METRIC_KEYWORDS.items() if keyword in normalized), None)
+
+
 # ============================================================
 # LLM 配置
 # ============================================================
@@ -129,6 +155,8 @@ def parse_question(state: AnalysisState) -> AnalysisState:
             return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
         state.parsed_problem = parsed.get("problem", state.user_question)
+        parsed_metric = str(parsed.get("metric") or SUPPORTED_METRIC).strip().lower()
+        state.parsed_metric = _METRIC_ALIASES.get(parsed_metric, parsed_metric)
         state.is_info_complete = bool(parsed.get("is_complete", True))
         state.clarification_question = parsed.get("clarification")
         state.parsed_start = parse_date(parsed.get("start_date"))
@@ -136,6 +164,14 @@ def parse_question(state: AnalysisState) -> AnalysisState:
         state.parsed_compare_start = parse_date(parsed.get("compare_start"))
         state.parsed_compare_end = parse_date(parsed.get("compare_end"))
         state.parsed_dimensions = parsed.get("dimensions", ["channel", "device", "region", "user_type"])
+
+        unsupported_label = _unsupported_metric_label(state.user_question)
+        if state.parsed_metric != SUPPORTED_METRIC or unsupported_label:
+            state.is_info_complete = False
+            state.clarification_question = (
+                f"当前演示仅支持有效下单转化率的归因分析，暂不支持{unsupported_label or '该指标'}。"
+                "你可以改问：为什么本期下单转化率下降，或按渠道、设备、地区、新老用户拆解转化率。"
+            )
 
         if state.is_info_complete and (not state.parsed_start or not state.parsed_end):
             raise ValueError("完整分析请求必须提供 start_date 和 end_date")
@@ -232,6 +268,8 @@ def build_request(state: AnalysisState) -> AnalysisState:
 
         state.analysis_request = {
             "problem": request.problem,
+            "metric": state.parsed_metric,
+            "dimensions": state.parsed_dimensions,
             "baseline_start": request.baseline_start.isoformat(),
             "baseline_end": request.baseline_end.isoformat(),
             "current_start": request.current_start.isoformat(),
@@ -305,37 +343,32 @@ def extract_findings(state: AnalysisState) -> AnalysisState:
     try:
         findings = []
 
-        # 从渠道拆解中提取
-        channel_contribs = state.analysis_result.get("channel_decomposition", {}).get("contributions", [])
-        for contrib in channel_contribs:
-            if abs(contrib["total_effect"]) > 0.001:  # 效应绝对值 > 0.1%
-                findings.append({
-                    "dimension": "渠道",
-                    "group": contrib["group_name"],
-                    "effect": contrib["total_effect"],
-                    "effect_type": "total",
-                    "share_effect": contrib["share_effect"],
-                    "rate_effect": contrib["rate_effect"],
-                    "baseline_rate": contrib["baseline_rate"],
-                    "current_rate": contrib["current_rate"],
-                    "evidence_ref": f"channel_decomposition.contributions[{contrib['group_name']}].total_effect"
-                })
-
-        # 从设备拆解中提取
-        device_contribs = state.analysis_result.get("device_decomposition", {}).get("contributions", [])
-        for contrib in device_contribs:
-            if abs(contrib["total_effect"]) > 0.001:
-                findings.append({
-                    "dimension": "设备",
-                    "group": contrib["group_name"],
-                    "effect": contrib["total_effect"],
-                    "effect_type": "total",
-                    "share_effect": contrib["share_effect"],
-                    "rate_effect": contrib["rate_effect"],
-                    "baseline_rate": contrib["baseline_rate"],
-                    "current_rate": contrib["current_rate"],
-                    "evidence_ref": f"device_decomposition.contributions[{contrib['group_name']}].total_effect"
-                })
+        dimension_configs = {
+            "channel": ("channel_decomposition", "渠道"),
+            "device": ("device_decomposition", "设备"),
+            "region": ("region_decomposition", "地区"),
+            "user_type": ("user_type_decomposition", "新老用户"),
+        }
+        requested_dimensions = set(state.parsed_dimensions or dimension_configs.keys())
+        for dimension_key in requested_dimensions:
+            config = dimension_configs.get(dimension_key)
+            if not config:
+                continue
+            result_key, display_name = config
+            contributions = state.analysis_result.get(result_key, {}).get("contributions", [])
+            for contrib in contributions:
+                if abs(contrib["total_effect"]) > 0.001:
+                    findings.append({
+                        "dimension": display_name,
+                        "group": contrib["group_name"],
+                        "effect": contrib["total_effect"],
+                        "effect_type": "total",
+                        "share_effect": contrib["share_effect"],
+                        "rate_effect": contrib["rate_effect"],
+                        "baseline_rate": contrib["baseline_rate"],
+                        "current_rate": contrib["current_rate"],
+                        "evidence_ref": f"{result_key}.contributions[{contrib['group_name']}].total_effect",
+                    })
 
         # 从漏斗环节中提取
         stages = state.analysis_result.get("stage_decomposition", {}).get("stages", [])
@@ -524,23 +557,30 @@ def generate_report(state: AnalysisState) -> AnalysisState:
             )
         stage_breakdown = "\n".join(stage_lines)
 
-        # 渠道
-        channel_lines = []
-        for c in sorted(result["channel_decomposition"]["contributions"], key=lambda x: abs(x["total_effect"]), reverse=True):
-            channel_lines.append(
-                f"- {c['group_name']}: 总效应 {c['total_effect']*100:+.4f}% "
-                f"(结构{c['share_effect']*100:+.4f}% + 表现{c['rate_effect']*100:+.4f}%)"
-            )
-        channel_breakdown = "\n".join(channel_lines)
-
-        # 设备
-        device_lines = []
-        for c in sorted(result["device_decomposition"]["contributions"], key=lambda x: abs(x["total_effect"]), reverse=True):
-            device_lines.append(
-                f"- {c['group_name']}: 总效应 {c['total_effect']*100:+.4f}% "
-                f"(结构{c['share_effect']*100:+.4f}% + 表现{c['rate_effect']*100:+.4f}%)"
-            )
-        device_breakdown = "\n".join(device_lines)
+        dimension_configs = {
+            "channel": ("channel_decomposition", "渠道"),
+            "device": ("device_decomposition", "设备"),
+            "region": ("region_decomposition", "地区"),
+            "user_type": ("user_type_decomposition", "新老用户"),
+        }
+        requested_dimensions = state.parsed_dimensions or list(dimension_configs)
+        dimension_blocks = []
+        for dimension_key in requested_dimensions:
+            config = dimension_configs.get(dimension_key)
+            if not config:
+                continue
+            result_key, display_name = config
+            contributions = result.get(result_key, {}).get("contributions", [])
+            if not contributions:
+                continue
+            lines = []
+            for contribution in sorted(contributions, key=lambda item: abs(item["total_effect"]), reverse=True):
+                lines.append(
+                    f"- {contribution['group_name']}: 总效应 {contribution['total_effect']*100:+.4f}% "
+                    f"(结构{contribution['share_effect']*100:+.4f}% + 表现{contribution['rate_effect']*100:+.4f}%)"
+                )
+            dimension_blocks.append(f"#### {display_name}\n" + "\n".join(lines))
+        dimension_breakdown = "\n\n".join(dimension_blocks) or "未指定可分析维度"
 
         # 业务事件
         event_lines = []
@@ -571,8 +611,7 @@ def generate_report(state: AnalysisState) -> AnalysisState:
             current_rate=f"{current_rate:.2f}",
             rate_change=f"{rate_change:+.2f}",
             stage_breakdown=stage_breakdown,
-            channel_breakdown=channel_breakdown,
-            device_breakdown=device_breakdown,
+            dimension_breakdown=dimension_breakdown,
             business_events=business_events,
             attachment_evidence=attachment_evidence,
             retrieved_docs=retrieved_docs

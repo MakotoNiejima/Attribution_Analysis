@@ -24,13 +24,14 @@ PARSE_QUESTION_PROMPT = """你是一个经营分析助手。用户会提出关�
 请从问题中提取以下信息，并以JSON格式返回：
 
 1. problem：标准化的问题描述（一句话）
-2. start_date：分析周期开始日期（格式：YYYY-MM-DD）
-3. end_date：分析周期结束日期（格式：YYYY-MM-DD）
-4. compare_start：对比周期开始日期（可选）
-5. compare_end：对比周期结束日期（可选）
-6. dimensions：需要分析的维度列表，可选值：channel（渠道）、device（设备）、region（地区）、user_type（用户类型）
-7. is_complete：信息是否完整（bool）
-8. clarification：如果信息不完整，需要追问的问题（string）
+2. metric：指标类型。本版本唯一可执行值是 order_conversion_rate（有效下单转化率）
+3. start_date：分析周期开始日期（格式：YYYY-MM-DD）
+4. end_date：分析周期结束日期（格式：YYYY-MM-DD）
+5. compare_start：对比周期开始日期（可选）
+6. compare_end：对比周期结束日期（可选）
+7. dimensions：需要分析的维度列表，可选值：channel（渠道）、device（设备）、region（地区）、user_type（用户类型）
+8. is_complete：信息是否完整（bool）
+9. clarification：如果信息不完整，需要追问的问题（string）
 
 规则：
 - 如果用户说"本月"，使用当前月份
@@ -39,11 +40,13 @@ PARSE_QUESTION_PROMPT = """你是一个经营分析助手。用户会提出关�
 - 如果用户没有指定对比周期，默认对比上一个同等长度的周期
 - 如果用户没有指定维度，默认分析所有维度
 - 如果时间范围不明确，is_complete设为false
+- 销售额、营收、ROI、客单价、库存/周转率等不是当前分析内核已实现的指标；遇到这类请求时，metric 写 unsupported，is_complete 设为 false，并在 clarification 中说明当前仅支持有效下单转化率及其维度拆解
 
 返回格式（只返回JSON，不要其他文字）：
 ```json
 {{
     "problem": "...",
+    "metric": "order_conversion_rate",
     "start_date": "YYYY-MM-DD",
     "end_date": "YYYY-MM-DD",
     "compare_start": "YYYY-MM-DD",
@@ -82,6 +85,7 @@ PARSE_QUESTION_WITH_HISTORY_PROMPT = """你是一个经营分析助手。用户�
 ```json
 {{
     "problem": "合并后的完整问题描述",
+    "metric": "order_conversion_rate",
     "start_date": "YYYY-MM-DD",
     "end_date": "YYYY-MM-DD",
     "compare_start": "YYYY-MM-DD",
@@ -112,11 +116,8 @@ GENERATE_REPORT_PROMPT = """你是一个经营分析报告撰写助手。请根�
 ### 漏斗环节分解
 {stage_breakdown}
 
-### 渠道维度
-{channel_breakdown}
-
-### 设备维度
-{device_breakdown}
+### 用户请求的维度拆解
+{dimension_breakdown}
 
 ### 匹配的业务事件
 {business_events}
@@ -143,6 +144,7 @@ GENERATE_REPORT_PROMPT = """你是一个经营分析报告撰写助手。请根�
    - 禁止写出“超过70%”“约占一半”等上方没有直接提供的量化结论
    - 时间范围必须逐字使用上方的基准期和当前期，不得写成整月或其他日期
    - 如果某个维度没有显著发现，不要强行解释
+   - 主要发现必须优先回答“用户请求的维度拆解”；不要用未请求维度的结果替代该问题的答案
    - 业务事件只能复述给定事件，并使用“同一时期存在……事件，可能与……异常同时出现，仍需进一步验证”的表述
    - 业务事件不得使用”导致、造成、直接影响、高度相关、证明、最直接问题”等因果或强关联措辞，也不能添加事件中未提供的细节
    - 文档片段仅作为背景参考信息；如需引用，必须使用”根据文档《xxx》第X段，……”的格式，并标注 [来源: xxx]

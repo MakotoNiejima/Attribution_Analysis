@@ -26,6 +26,7 @@ class AnalysisState:
 
     # 解析结果
     parsed_problem: Optional[str] = None
+    parsed_metric: Optional[str] = None
     parsed_start: Optional[datetime] = None
     parsed_end: Optional[datetime] = None
     parsed_compare_start: Optional[datetime] = None

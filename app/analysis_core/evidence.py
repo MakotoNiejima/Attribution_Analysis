@@ -332,7 +332,7 @@ def build_evidence_collection(
         EvidenceCollection: 证据集合
     """
 
-    problem_definition = "为什么本月整体转化率比上月下降？"
+    problem_definition = "有效下单转化率的周期对比与归因分析"
 
     time_range = {
         "baseline_start": baseline.start.strftime("%Y-%m-%d"),

@@ -170,6 +170,7 @@ class TestRagStore:
         assert len(results) >= 1
         assert all(isinstance(r, RetrievedChunk) for r in results)
         assert results[0].source_file == "投放记录.txt"
+        assert rag_store._uses_faiss is False
 
     @patch("app.rag.store.embed_texts", side_effect=_mock_embed_texts)
     def test_search_empty_store(self, mock_emb, rag_store):

@@ -109,6 +109,55 @@ def test_incomplete_question_keeps_model_clarification(monkeypatch):
     assert result["analysis_result"] is None
 
 
+def test_unsupported_metric_returns_clarification_instead_of_conversion_report(monkeypatch):
+    fake_llm = QueueLLM([
+        json.dumps({
+            "problem": "销售额变化分析",
+            "metric": "sales_amount",
+            "start_date": "2026-07-01",
+            "end_date": "2026-07-15",
+            "compare_start": "2026-06-01",
+            "compare_end": "2026-06-15",
+            "dimensions": ["channel"],
+            "is_complete": True,
+            "clarification": None,
+        })
+    ])
+    monkeypatch.setattr(nodes, "get_llm", lambda: fake_llm)
+
+    result = run_analysis_pipeline("为什么销售额下降？")
+
+    assert result["next_action"] == "clarify"
+    assert "仅支持有效下单转化率" in result["clarification_question"]
+    assert result["analysis_result"] is None
+
+
+def test_requested_user_type_dimension_is_used_in_report_prompt(monkeypatch):
+    fake_llm = QueueLLM([
+        json.dumps({
+            "problem": "按新老用户拆解转化率变化",
+            "metric": "order_conversion_rate",
+            "start_date": "2026-07-01",
+            "end_date": "2026-07-15",
+            "compare_start": "2026-06-01",
+            "compare_end": "2026-06-15",
+            "dimensions": ["user_type"],
+            "is_complete": True,
+            "clarification": None,
+        }),
+        "# 新老用户分析报告\n\n结论均基于给定证据。",
+        json.dumps({"is_valid": True, "errors": [], "warnings": []}),
+    ])
+    monkeypatch.setattr(nodes, "get_llm", lambda: fake_llm)
+
+    result = run_analysis_pipeline("新老用户的转化率变化如何？")
+
+    report_prompt = fake_llm.messages[1][1].content
+    assert result["next_action"] == "end"
+    assert "#### 新老用户" in report_prompt
+    assert "#### 渠道" not in report_prompt
+
+
 def test_follow_up_uses_clarification_history_to_complete_request(monkeypatch):
     fake_llm = QueueLLM([
         complete_parse_reply(),

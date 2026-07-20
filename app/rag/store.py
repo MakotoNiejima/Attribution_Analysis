@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -230,15 +231,22 @@ class RagStore:
             embeddings.append(np.frombuffer(emb_blob, dtype=np.float32))
 
         matrix = np.stack(embeddings)
-        try:
-            import faiss
+        backend = os.getenv("RAG_VECTOR_BACKEND", "numpy").strip().lower()
+        if backend == "faiss":
+            try:
+                import faiss
 
-            index = faiss.IndexFlatIP(matrix.shape[1])
-            index.add(matrix)
-            self._index = index
-            self._uses_faiss = True
-        except ModuleNotFoundError:
-            # 这里保存矩阵而非抛异常；search 会直接执行 matrix @ query。
+                index = faiss.IndexFlatIP(matrix.shape[1])
+                index.add(matrix)
+                self._index = index
+                self._uses_faiss = True
+            except (ImportError, RuntimeError):
+                # FAISS 缺失或初始化失败时使用 NumPy。某些平台的
+                # FAISS wheel 在 search 时可能直接终止进程，因此默认不自动启用。
+                self._index = matrix
+                self._uses_faiss = False
+        else:
+            # 演示数据规模很小，精确内积检索的结果与 IndexFlatIP 一致。
             self._index = matrix
             self._uses_faiss = False
         self._chunk_ids = chunk_ids
