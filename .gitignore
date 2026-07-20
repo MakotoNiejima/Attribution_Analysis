@@ -1,0 +1,62 @@
+# ===== 环境变量（包含密钥和数据库密码） =====
+.env
+.env.*
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.Python
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ===== Node / Frontend =====
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+*~
+
+# ===== 运行期生成文件 =====
+# 分析结果 / 证据输出 / 报告
+analysis_result.json
+evidence_output.json
+standard_answer.json
+test_report.json
+test_report.txt
+quality_report.txt
+expected_stats_report.txt
+metadata.json
+expected_stats.json
+
+# 数据导出
+csv_export/
+sql_inserts/
+
+# 运行期附件、向量库、导出物和本地 SQLite 缓存
+runtime_data/
+uploads/
+attachments.db
+rag_store.db
+
+# ===== 杂项 =====
+*.log
+*.drawio
+.DS_Store
+Thumbs.db

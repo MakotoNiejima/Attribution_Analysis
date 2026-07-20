@@ -1,0 +1,43 @@
+name: attribution-analysis
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-attribution_db}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env before running Docker}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build: .
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+      FRONTEND_URL: http://localhost:8080
+      CORS_ALLOW_ORIGINS: http://localhost:8080
+      APP_STORAGE_ROOT: /app/runtime_data
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - runtime_data:/app/runtime_data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  mysql_data:
+  runtime_data:
