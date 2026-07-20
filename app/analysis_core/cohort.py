@@ -40,6 +40,7 @@ class SessionRecord:
     has_visit: bool
     has_cart: bool
     has_order: bool
+    order_amount: float = 0.0
 
 
 @dataclass
@@ -156,7 +157,8 @@ def build_cohort(
             s.started_at,
             CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END as has_visit,
             CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as has_cart,
-            CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END as has_order
+            CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END as has_order,
+            COALESCE(o.total_amount, 0) as order_amount
         FROM sessions s
         LEFT JOIN (
             SELECT session_id, MIN(id) as id
@@ -184,7 +186,7 @@ def build_cohort(
             GROUP BY session_id
         ) c ON c.session_id = s.id
         LEFT JOIN (
-            SELECT session_id, MIN(id) as id
+            SELECT session_id, MIN(id) as id, SUM(order_amount) as total_amount
             FROM orders
             WHERE order_status IN ('paid', 'completed')
               AND paid_at IS NOT NULL
@@ -227,7 +229,8 @@ def build_cohort(
                 started_at=row[8],
                 has_visit=bool(row[9]),
                 has_cart=bool(row[10]),
-                has_order=bool(row[11])
+                has_order=bool(row[11]),
+                order_amount=float(row[12]) if row[12] is not None else 0.0
             )
             sessions.append(session)
 
