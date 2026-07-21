@@ -155,8 +155,14 @@ class AnalysisPersistenceService:
                 "end_seq_no": "INT NOT NULL DEFAULT 0",
             },
             "websocket_tokens": {
-                "conversation_id": "VARCHAR(64) NOT NULL",
-                "task_id": "VARCHAR(64) NOT NULL",
+                # 旧版本的令牌表没有任务/会话绑定字段。表中可能仍有历史的
+                # 短期令牌，因此升级时先以可空列补齐；新模型写入时始终提供
+                # 这两个值，历史令牌自然会在过期后失效。直接 ADD NOT NULL
+                # 会在带历史数据的 MySQL/SQLite 表上导致启动迁移失败。
+                "conversation_id": "VARCHAR(64)",
+                "task_id": "VARCHAR(64)",
+                "token": "VARCHAR(128)",
+                "consumed_at": "DATETIME",
             },
         }
         inspector = inspect(self.engine)
@@ -244,6 +250,7 @@ class AnalysisPersistenceService:
                         connection.execute(
                             text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
                         )
+                        print(f"[migrate] 新增列: {table_name}.{column_name}")
 
     def fail_interrupted_tasks(self) -> int:
         """服务启动后收束上次进程异常退出时遗留的 running 任务。"""
