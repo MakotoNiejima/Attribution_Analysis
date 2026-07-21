@@ -33,6 +33,63 @@ export type FunnelStage = {
   effect_on_overall: number
 }
 
+export type ChannelEfficiencyMetrics = {
+  channel: string
+  impressions: number
+  clicks: number
+  conversions: number
+  revenue: number
+  ad_spend: number
+  roi: number
+  cpc: number
+  cpa: number
+  ctr: number
+  cvr: number
+}
+
+export type ChannelEfficiencyChange = {
+  channel: string
+  baseline: ChannelEfficiencyMetrics
+  current: ChannelEfficiencyMetrics
+  roi_change: number
+  roi_change_rate: number
+  cpc_change: number
+  cpa_change: number
+  revenue_change: number
+  ad_spend_change: number
+}
+
+export type MarketAnalysisResult = {
+  baseline_period: {
+    start: string
+    end: string
+  }
+  current_period: {
+    start: string
+    end: string
+  }
+  baseline_summary: {
+    total_revenue: number
+    total_ad_spend: number
+    overall_roi: number
+  }
+  current_summary: {
+    total_revenue: number
+    total_ad_spend: number
+    overall_roi: number
+  }
+  channel_changes: ChannelEfficiencyChange[]
+  abnormal_channels: Array<{
+    channel: string
+    roi_change_rate: number
+    roi_change: number
+    baseline_roi: number
+    current_roi: number
+    ad_spend_change: number
+    revenue_change: number
+  }>
+}
+
 export type AnalysisResult = {
   baseline_funnel?: Funnel
   current_funnel?: Funnel
@@ -48,6 +105,35 @@ export type AnalysisResult = {
     current_start?: string
     current_end?: string
   }
+  // 市场表现分析字段
+  baseline_period?: {
+    start: string
+    end: string
+  }
+  current_period?: {
+    start: string
+    end: string
+  }
+  baseline_summary?: {
+    total_revenue: number
+    total_ad_spend: number
+    overall_roi: number
+  }
+  current_summary?: {
+    total_revenue: number
+    total_ad_spend: number
+    overall_roi: number
+  }
+  channel_changes?: ChannelEfficiencyChange[]
+  abnormal_channels?: Array<{
+    channel: string
+    roi_change_rate: number
+    roi_change: number
+    baseline_roi: number
+    current_roi: number
+    ad_spend_change: number
+    revenue_change: number
+  }>
 }
 
 type ResponseBase = {

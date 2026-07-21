@@ -39,7 +39,7 @@ class ClarifyResponse(BaseModel):
 
 class CompletedResponse(BaseModel):
     """分析成功"""
-    status: Literal["completed"] = "completed"
+    status: Literal["success"] = "success"
     conversation_id: str
     task_id: str
     report: str
@@ -73,7 +73,7 @@ AnalysisResponse = ClarifyResponse | CompletedResponse | FailedResponse | Cancel
 # 会话与任务历史
 # ============================================================
 
-TaskStatus = Literal["running", "clarify", "completed", "failed", "cancelled"]
+TaskStatus = Literal["queued", "running", "clarify", "success", "failed", "cancelled"]
 
 
 class ConversationSummary(BaseModel):

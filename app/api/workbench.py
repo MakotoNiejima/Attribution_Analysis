@@ -34,6 +34,19 @@ class ConversationRenameRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class ConversationDeleteRequest(BaseModel):
+    conversation_ids: list[str] = Field(min_length=1)
+
+
+class ConversationUpdateRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+
+
+class AttachmentDeleteRequest(BaseModel):
+    attachment_id: str = Field(min_length=1)
+
+
 class MessageCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=1000)
 
@@ -203,7 +216,7 @@ async def export_result(task_id: str, current_user: dict[str, Any] = Depends(get
     service = get_persistence_service()
     try:
         task = await run_in_threadpool(service.get_task_for_user, task_id, current_user["user_id"])
-        if task["status"] != "completed" or not task.get("report"):
+        if task["status"] != "success" or not task.get("report"):
             raise HTTPException(status_code=409, detail="只有已完成且验证通过的分析结果可以导出")
         destination = export_path(
             user_id=current_user["user_id"],
@@ -327,3 +340,69 @@ async def set_config(
     )
     runtime = app_config.apply_runtime_overrides({request.key: request.value})
     return {"status": "ok", "key": request.key, "runtime": runtime}
+
+
+# ============================================================
+# 规范接口兼容层（1.1.9 接口要求）
+# ============================================================
+
+@router.post("/chat/delete")
+async def delete_chats_batch(
+    request: ConversationDeleteRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """批量删除会话（兼容规范接口）"""
+    deleted_count = 0
+    for conversation_id in request.conversation_ids:
+        try:
+            paths = await run_in_threadpool(
+                get_persistence_service().delete_conversation, conversation_id, current_user["user_id"]
+            )
+            for path in paths:
+                try:
+                    from app.storage import unlink_file
+                    await run_in_threadpool(unlink_file, path)
+                except StoragePathError:
+                    pass
+            await run_in_threadpool(remove_conversation_files, current_user["user_id"], conversation_id)
+            deleted_count += 1
+        except (ConversationNotFoundError, ConversationAccessError):
+            continue
+    return {"status": "ok", "deleted_count": deleted_count}
+
+
+@router.post("/chat/update")
+async def update_chat(
+    request: ConversationUpdateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """更新会话标题（兼容规范接口）"""
+    try:
+        return await run_in_threadpool(
+            get_persistence_service().rename_conversation,
+            request.conversation_id,
+            current_user["user_id"],
+            request.title,
+        )
+    except (ConversationNotFoundError, ConversationAccessError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/attachment/delete")
+async def delete_attachment_compat(
+    request: AttachmentDeleteRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """删除附件（兼容规范接口）"""
+    from app.api.attachments import delete_attachment as _delete
+    return await _delete(request.attachment_id, current_user)
+
+
+@router.get("/attachment/get")
+async def get_attachment_compat(
+    attachment_id: str = Query(...),
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """获取附件信息（兼容规范接口）"""
+    from app.api.attachments import get_attachment_detail
+    return await get_attachment_detail(attachment_id, current_user)

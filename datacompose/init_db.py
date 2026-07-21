@@ -15,8 +15,8 @@ from urllib.parse import quote_plus
 
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, Integer, Numeric, Boolean, Text, DateTime, JSON, ForeignKey, func
-from datetime import datetime
+from sqlalchemy import BigInteger, String, Integer, Numeric, Boolean, Text, DateTime, Date, JSON, ForeignKey, func
+from datetime import datetime, date
 
 
 # 以项目统一 .env 为唯一凭证来源，避免在初始化脚本中保留明文密码。
@@ -151,6 +151,36 @@ class BusinessEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 
 
+class Campaign(Base):
+    """营销活动表"""
+    __tablename__ = "campaigns"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="活动编号")
+    campaign_name: Mapped[str] = mapped_column(String(200), nullable=False, comment="活动名称")
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, comment="渠道")
+    budget: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0, comment="预算")
+    start_date: Mapped[date] = mapped_column(Date, nullable=False, comment="开始日期")
+    end_date: Mapped[date] = mapped_column(Date, nullable=False, comment="结束日期")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", comment="状态")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class CampaignDailyMetric(Base):
+    """营销活动日指标表"""
+    __tablename__ = "campaign_daily_metrics"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("campaigns.id"), nullable=False, comment="活动ID")
+    metric_date: Mapped[date] = mapped_column(Date, nullable=False, comment="日期")
+    impressions: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="曝光量")
+    clicks: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="点击量")
+    conversions: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="转化数")
+    revenue: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0, comment="收入")
+    ad_spend: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0, comment="广告花费")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
 # ============================================================
 # 初始化函数
 # ============================================================
@@ -189,7 +219,8 @@ async def create_tables():
 
     tables = [
         "biz_users", "products", "sessions",
-        "visit_events", "cart_events", "orders", "business_events"
+        "visit_events", "cart_events", "orders", "business_events",
+        "campaigns", "campaign_daily_metrics"
     ]
     print(f"[OK] 已创建 {len(tables)} 张表: {', '.join(tables)}")
 

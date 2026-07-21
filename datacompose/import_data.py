@@ -330,6 +330,81 @@ async def import_business_events(session: AsyncSession, csv_dir: str):
     print(f"  [OK] business_events 导入完成")
 
 
+async def import_campaigns(session: AsyncSession, csv_dir: str):
+    """导入营销活动"""
+    filepath = os.path.join(csv_dir, 'campaigns.csv')
+    if not os.path.exists(filepath):
+        print("  [SKIP] campaigns.csv 不存在")
+        return
+
+    rows = load_csv(filepath)
+    print(f"  导入 campaigns: {len(rows)} 行...")
+
+    for row in rows:
+        await session.execute(
+            text("""
+                INSERT INTO campaigns
+                (campaign_code, campaign_name, channel, budget, start_date, end_date, status)
+                VALUES
+                (:campaign_code, :campaign_name, :channel, :budget, :start_date, :end_date, :status)
+            """),
+            {
+                'campaign_code': row['campaign_code'],
+                'campaign_name': row['campaign_name'],
+                'channel': row['channel'],
+                'budget': parse_float(row['budget']) or 0,
+                'start_date': row['start_date'],
+                'end_date': row['end_date'],
+                'status': row.get('status', 'active')
+            }
+        )
+
+    await session.commit()
+    print(f"  [OK] campaigns 导入完成")
+
+
+async def import_campaign_daily_metrics(session: AsyncSession, csv_dir: str, campaign_map: dict):
+    """导入营销活动日指标"""
+    filepath = os.path.join(csv_dir, 'campaign_daily_metrics.csv')
+    if not os.path.exists(filepath):
+        print("  [SKIP] campaign_daily_metrics.csv 不存在")
+        return
+
+    rows = load_csv(filepath)
+    print(f"  导入 campaign_daily_metrics: {len(rows)} 行...")
+
+    batch_size = 1000
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i+batch_size]
+        for row in batch:
+            campaign_id = campaign_map.get(row.get('campaign_code'))
+            if not campaign_id:
+                continue
+
+            await session.execute(
+                text("""
+                    INSERT INTO campaign_daily_metrics
+                    (campaign_id, metric_date, impressions, clicks, conversions, revenue, ad_spend)
+                    VALUES
+                    (:campaign_id, :metric_date, :impressions, :clicks, :conversions, :revenue, :ad_spend)
+                """),
+                {
+                    'campaign_id': campaign_id,
+                    'metric_date': row['metric_date'],
+                    'impressions': parse_int(row['impressions']) or 0,
+                    'clicks': parse_int(row['clicks']) or 0,
+                    'conversions': parse_int(row['conversions']) or 0,
+                    'revenue': parse_float(row['revenue']) or 0,
+                    'ad_spend': parse_float(row['ad_spend']) or 0
+                }
+            )
+
+        await session.commit()
+        print(f"    已导入 {min(i+batch_size, len(rows))}/{len(rows)}")
+
+    print(f"  [OK] campaign_daily_metrics 导入完成")
+
+
 async def load_id_maps(session: AsyncSession) -> tuple:
     """加载 ID 映射（CSV中的外部ID -> 数据库内部ID）"""
 
@@ -345,7 +420,11 @@ async def load_id_maps(session: AsyncSession) -> tuple:
     result = await session.execute(text("SELECT id, session_key FROM sessions"))
     session_map = {row[1]: row[0] for row in result}
 
-    return user_map, product_map, session_map
+    # 营销活动映射
+    result = await session.execute(text("SELECT id, campaign_code FROM campaigns"))
+    campaign_map = {row[1]: row[0] for row in result}
+
+    return user_map, product_map, session_map, campaign_map
 
 
 async def main():
@@ -369,22 +448,27 @@ async def main():
     async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as session:
-        print("\n[1/3] 导入基础数据...")
+        print("\n[1/4] 导入基础数据...")
         await import_biz_users(session, csv_dir)
         await import_products(session, csv_dir)
 
-        print("\n[2/3] 导入会话数据...")
-        user_map, product_map, session_map = await load_id_maps(session)
+        print("\n[2/4] 导入会话数据...")
+        user_map, product_map, session_map, _ = await load_id_maps(session)
         await import_sessions(session, csv_dir, user_map)
 
         # 重新加载会话映射
-        _, _, session_map = await load_id_maps(session)
+        user_map, product_map, session_map, _ = await load_id_maps(session)
 
-        print("\n[3/3] 导入事件数据...")
+        print("\n[3/4] 导入事件数据...")
         await import_visit_events(session, csv_dir, session_map, product_map)
         await import_cart_events(session, csv_dir, session_map, product_map)
         await import_orders(session, csv_dir, session_map, user_map, product_map)
         await import_business_events(session, csv_dir)
+
+        print("\n[4/4] 导入营销活动数据...")
+        await import_campaigns(session, csv_dir)
+        _, _, _, campaign_map = await load_id_maps(session)
+        await import_campaign_daily_metrics(session, csv_dir, campaign_map)
 
     await engine.dispose()
 
@@ -395,7 +479,7 @@ async def main():
     # 统计
     engine2 = create_async_engine(url, echo=False)
     async with engine2.connect() as conn:
-        for table in ['biz_users', 'products', 'sessions', 'visit_events', 'cart_events', 'orders', 'business_events']:
+        for table in ['biz_users', 'products', 'sessions', 'visit_events', 'cart_events', 'orders', 'business_events', 'campaigns', 'campaign_daily_metrics']:
             result = await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))
             count = result.scalar()
             print(f"  {table}: {count} 行")

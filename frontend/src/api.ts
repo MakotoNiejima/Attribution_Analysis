@@ -139,6 +139,20 @@ export function getChat(conversationId: string): Promise<ChatDetail> {
   return fetchWorkbench<ChatDetail>(`/chat/ls/${encodeURIComponent(conversationId)}`)
 }
 
+export function renameChat(conversationId: string, title: string): Promise<ConversationSummary> {
+  return fetchWorkbench<ConversationSummary>(`/chat/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteChat(conversationId: string): Promise<void> {
+  return fetchWorkbench(`/chat/${encodeURIComponent(conversationId)}`, {
+    method: 'DELETE',
+  }).then(() => undefined)
+}
+
 export function sendChatMessage(conversationId: string, content: string): Promise<ChatTaskAccepted> {
   return fetchWorkbench<ChatTaskAccepted>(`/chat/${encodeURIComponent(conversationId)}/messages`, {
     method: 'POST',
@@ -194,6 +208,28 @@ export function attachmentDownloadUrl(attachmentId: string): string {
 
 export function resultExportUrl(taskId: string): string {
   return `${workbenchBaseUrl}/results/${encodeURIComponent(taskId)}/export`
+}
+
+// 配置管理 API
+export function getAdminConfig(): Promise<{ runtime: Record<string, string>; overrides: Record<string, string> }> {
+  return fetchWorkbench('/admin/config')
+}
+
+export function setAdminConfig(key: string, value: string): Promise<{ status: string; key: string; runtime: Record<string, string> }> {
+  return fetchWorkbench('/admin/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }),
+  })
+}
+
+export function reloadAdminConfig(): Promise<{ status: string; config: Record<string, string> }> {
+  return fetchWorkbench('/admin/reload', { method: 'POST' })
+}
+
+// 任务日志 API
+export function getTaskLogs(taskId: string): Promise<Array<{ log_id: string; task_id: string; level: string; message: string; created_at: string }>> {
+  return fetchWorkbench(`/tasks/${encodeURIComponent(taskId)}/logs`)
 }
 
 export type { ChatStreamEvent }

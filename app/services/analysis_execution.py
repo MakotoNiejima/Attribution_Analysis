@@ -41,10 +41,10 @@ def build_analysis_response(
             conversation_id=conversation_id,
             task_id=task_id,
             report=result["report_final"],
-            key_findings=result.get("key_findings", []),
-            analysis_result=result.get("analysis_result", {}),
-            evidence=result.get("evidence", {}),
-            matched_events=result.get("matched_events", []),
+            key_findings=result.get("key_findings") or [],
+            analysis_result=result.get("analysis_result") or {},
+            evidence=result.get("evidence") or {},
+            matched_events=result.get("matched_events") or [],
         )
     return FailedResponse(
         conversation_id=conversation_id,
@@ -63,7 +63,7 @@ def persist_terminal_response(response: AnalysisResponse) -> None:
     if isinstance(response, CompletedResponse):
         service.finish_task(
             response.task_id,
-            status="completed",
+            status="success",
             report=response.report,
             key_findings=response.key_findings,
             analysis_result=response.analysis_result,
@@ -138,7 +138,7 @@ def execute_persisted_task(
         )
         persist_terminal_response(response)
         summary_writer = getattr(service, "save_context_summary", None)
-        if summary_writer and response.status in {"completed", "clarify"}:
+        if summary_writer and response.status in {"success", "clarify"}:
             if isinstance(response, CompletedResponse):
                 summary = f"用户问题：{question}\n最终结论：{response.report[:600]}"
             else:

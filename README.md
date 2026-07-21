@@ -57,7 +57,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173`。开发模式下未配置 `AUTH_REQUIRED=true` 时会自动创建一个本地分析用户；也可通过登录页切换账号。生产环境必须修改 `AUTH_SECRET` 并启用真实身份提供方。
+打开 `http://localhost:5174`。开发模式下未配置 `AUTH_REQUIRED=true` 时会自动创建一个本地分析用户；也可通过登录页切换账号。生产环境必须修改 `AUTH_SECRET` 并启用真实身份提供方。
 
 ## 验证
 

@@ -33,7 +33,7 @@ def get_cors_origins() -> list[str]:
     """读取允许访问 API 的前端地址，开发环境默认 Vite 地址。"""
     raw_origins = os.getenv(
         "CORS_ALLOW_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
+        "http://localhost:5174,http://127.0.0.1:5174",
     )
     return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 

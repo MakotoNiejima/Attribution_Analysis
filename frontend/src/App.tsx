@@ -16,6 +16,8 @@ const EXAMPLE_QUESTIONS = [
   '为什么本月整体转化率比上月下降了？',
   '请分析 2026 年 7 月与 6 月的转化率变化。',
   '本月哪些渠道对整体转化率下降影响最大？',
+  '各渠道的 ROI 表现如何？',
+  '哪个渠道的投放效率下降最大？',
 ]
 
 const ACTIVE_CONVERSATION_KEY = 'attribution-analysis-active-conversation'
@@ -38,6 +40,16 @@ function formatEffect(value?: number) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '—'
   const direction = value < 0 ? '拉低' : '抬升'
   return `${direction} ${Math.abs(value * 100).toFixed(2)} 个百分点`
+}
+
+function formatROI(value?: number) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return value.toFixed(2)
+}
+
+function formatCurrency(value?: number) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatTaskTime(value?: string | null) {
@@ -268,7 +280,141 @@ function Events({ response }: { response: CompletedResponse }) {
   )
 }
 
+function MarketSummary({ response }: { response: CompletedResponse }) {
+  const baseline = response.analysis_result.baseline_summary
+  const current = response.analysis_result.current_summary
+  const timeRange = {
+    baseline: response.analysis_result.baseline_period,
+    current: response.analysis_result.current_period,
+  }
+
+  if (!baseline || !current) return null
+
+  const roiChange = current.overall_roi - baseline.overall_roi
+  const revenueChange = current.total_revenue - baseline.total_revenue
+  const spendChange = current.total_ad_spend - baseline.total_ad_spend
+
+  return (
+    <section className="card funnel-card">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Market Performance</p>
+          <h2>市场表现概览</h2>
+        </div>
+        {timeRange.baseline?.start && timeRange.current?.start && (
+          <span className="subtle-label">{timeRange.baseline.start} 对比 {timeRange.current.start}</span>
+        )}
+      </div>
+      <div className="conversion-hero">
+        <div>
+          <span>整体 ROI</span>
+          <strong>{formatROI(current.overall_roi)}</strong>
+        </div>
+        <div className="conversion-delta">
+          <span>较基准期</span>
+          <strong className={roiChange < 0 ? 'negative' : 'positive'}>
+            {roiChange >= 0 ? '+' : ''}{formatROI(roiChange)}
+          </strong>
+        </div>
+      </div>
+      <div className="funnel-grid">
+        <div className="metric">
+          <span>基准期收入</span>
+          <strong>{formatCurrency(baseline.total_revenue)}</strong>
+          <small>广告花费 {formatCurrency(baseline.total_ad_spend)}</small>
+        </div>
+        <div className="metric">
+          <span>当前期收入</span>
+          <strong>{formatCurrency(current.total_revenue)}</strong>
+          <small>广告花费 {formatCurrency(current.total_ad_spend)}</small>
+        </div>
+        <div className="metric">
+          <span>收入变化</span>
+          <strong className={revenueChange < 0 ? 'negative' : 'positive'}>
+            {revenueChange >= 0 ? '+' : ''}{formatCurrency(revenueChange)}
+          </strong>
+          <small>花费变化 {spendChange >= 0 ? '+' : ''}{formatCurrency(spendChange)}</small>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function ChannelEfficiencyTable({ response }: { response: CompletedResponse }) {
+  const channelChanges = response.analysis_result.channel_changes
+  const abnormalChannels = response.analysis_result.abnormal_channels
+
+  if (!channelChanges || channelChanges.length === 0) return null
+
+  return (
+    <section className="card events-card">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Channel Efficiency</p>
+          <h2>渠道效率对比</h2>
+        </div>
+        <span className="subtle-label">按 ROI 变化排序</span>
+      </div>
+      <div className="event-list">
+        {channelChanges
+          .sort((a, b) => a.roi_change_rate - b.roi_change_rate)
+          .map((change, index) => {
+            const isAbnormal = abnormalChannels?.some((ch) => ch.channel === change.channel)
+            return (
+              <article className="event" key={change.channel}>
+                <span className={`severity ${isAbnormal ? 'severity-high' : 'severity-low'}`} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <strong>{change.channel}</strong>
+                    {isAbnormal && (
+                      <span style={{
+                        fontSize: '11px',
+                        padding: '2px 6px',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        color: '#dc2626',
+                        borderRadius: '4px',
+                      }}>
+                        异常
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', fontSize: '13px' }}>
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #6b7280)' }}>ROI</span>
+                      <div>
+                        {formatROI(change.baseline.roi)} → {formatROI(change.current.roi)}
+                        <span style={{ marginLeft: '4px', color: change.roi_change < 0 ? '#dc2626' : '#16a34a' }}>
+                          ({change.roi_change >= 0 ? '+' : ''}{formatROI(change.roi_change)})
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #6b7280)' }}>广告花费</span>
+                      <div>{formatCurrency(change.current.ad_spend)}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #6b7280)' }}>收入</span>
+                      <div>{formatCurrency(change.current.revenue)}</div>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-secondary, #6b7280)' }}>转化率</span>
+                      <div>{formatPercent(change.current.cvr * 100)}</div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+      </div>
+    </section>
+  )
+}
+
 function CompletedView({ response }: { response: CompletedResponse }) {
+  // 判断是否为市场表现分析
+  const isMarketAnalysis = response.analysis_result.baseline_summary && 
+                           response.analysis_result.channel_changes
+
   return (
     <div className="result-layout">
       <div className="primary-column">
@@ -282,11 +428,24 @@ function CompletedView({ response }: { response: CompletedResponse }) {
           </div>
           <ReportContent report={response.report} />
         </section>
-        <Events response={response} />
+        {isMarketAnalysis ? (
+          <ChannelEfficiencyTable response={response} />
+        ) : (
+          <Events response={response} />
+        )}
       </div>
       <aside className="insight-column">
-        <FunnelSummary response={response} />
-        <Findings findings={response.key_findings} />
+        {isMarketAnalysis ? (
+          <>
+            <MarketSummary response={response} />
+            <Findings findings={response.key_findings} />
+          </>
+        ) : (
+          <>
+            <FunnelSummary response={response} />
+            <Findings findings={response.key_findings} />
+          </>
+        )}
       </aside>
     </div>
   )
@@ -582,7 +741,7 @@ function LegacyApp() {
             <span className="window-icon">⌁</span>
             <div>
               <strong>演示数据窗口</strong>
-              <p>2026.06.01–06.15<br />对比 2026.07.01–07.15</p>
+              <p>2026.04.01–07.31<br />可对比任意月份或周</p>
             </div>
           </div>
 

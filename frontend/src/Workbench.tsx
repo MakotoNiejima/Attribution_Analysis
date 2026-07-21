@@ -5,6 +5,7 @@ import {
   chatStreamUrl,
   createChat,
   deleteAttachment,
+  deleteChat,
   getChat,
   getCurrentUser,
   getWorkbenchTask,
@@ -12,6 +13,7 @@ import {
   listChats,
   login,
   logout,
+  renameChat,
   resultExportUrl,
   sendChatMessage,
   uploadAttachment,
@@ -26,6 +28,8 @@ import type {
   ConversationSummary,
   TaskStatus,
 } from './types'
+import { ConfigPage } from './ConfigPage'
+import { LogPage } from './LogPage'
 
 const EXAMPLES = [
   '为什么本期整体转化率比基准期下降？',
@@ -96,6 +100,10 @@ function Workbench() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [currentPage, setCurrentPage] = useState<'workbench' | 'config' | 'logs'>('workbench')
+  const [logTaskId, setLogTaskId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
@@ -166,6 +174,7 @@ function Workbench() {
 
   async function openStream(taskId: string) {
     socketRef.current?.close()
+    let streamingContent = ''
     try {
       const { token } = await getWsToken(taskId)
       const socket = new WebSocket(chatStreamUrl(taskId, token))
@@ -174,7 +183,27 @@ function Workbench() {
         let event: ChatStreamEvent
         try { event = JSON.parse(message.data) as ChatStreamEvent } catch { return }
         setEvents((previous) => [...previous, event].slice(-30))
-        if (event.type === 'result_ready' && event.response) setSelectedResult(event.response)
+        
+        // 处理流式文本增量
+        if (event.type === 'message_delta' && event.delta_text) {
+          streamingContent += event.delta_text
+          // 创建一个临时的流式结果显示
+          setSelectedResult({
+            status: 'completed',
+            conversation_id: '',
+            task_id: taskId,
+            report: streamingContent,
+            key_findings: [],
+            analysis_result: {},
+            evidence: {},
+            matched_events: []
+          })
+        }
+        
+        if (event.type === 'result_ready' && event.response) {
+          setSelectedResult(event.response)
+          streamingContent = '' // 重置流式内容
+        }
         if (event.type === 'error') setNotice(event.message ?? '实时任务发生错误')
         if (event.type === 'done') {
           setActiveTaskId(null)
@@ -229,21 +258,89 @@ function Workbench() {
     await logout(); setUser(null); setDetail(null); setConversationId(null); setAccountOpen(false)
   }
 
+  function startRename(id: string, currentTitle: string) {
+    setRenamingId(id)
+    setRenameValue(currentTitle)
+  }
+
+  async function confirmRename() {
+    if (!renamingId || !renameValue.trim()) { setRenamingId(null); return }
+    try {
+      await renameChat(renamingId, renameValue.trim())
+      await refreshConversations()
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : '重命名失败') }
+    finally { setRenamingId(null) }
+  }
+
+  function cancelRename() {
+    setRenamingId(null)
+    setRenameValue('')
+  }
+
+  async function removeConversation(id: string) {
+    if (!window.confirm('确定要删除这个会话吗？所有相关消息和任务都将被删除。')) return
+    try {
+      await deleteChat(id)
+      if (conversationId === id) {
+        setConversationId(null)
+        setDetail(null)
+        setSelectedResult(null)
+      }
+      await refreshConversations()
+      setNotice('会话已删除')
+    } catch (reason) { setNotice(reason instanceof Error ? reason.message : '删除失败') }
+  }
+
+  function copyResult() {
+    if (!selectedResult || selectedResult.status !== 'completed') return
+    const text = selectedResult.report
+    navigator.clipboard.writeText(text).then(() => {
+      setNotice('报告已复制到剪贴板')
+    }).catch(() => {
+      setNotice('复制失败，请手动选择文本复制')
+    })
+  }
+
   if (!authReady) return <main className="login-page"><p>正在加载工作台…</p></main>
   if (!user) return <LoginCard onLoggedIn={setUser} />
 
+  // 配置页面
+  if (currentPage === 'config') {
+    return <ConfigPage onBack={() => setCurrentPage('workbench')} userRole={user.role} />
+  }
+
+  // 日志页面
+  if (currentPage === 'logs' && logTaskId) {
+    return <LogPage taskId={logTaskId} onBack={() => { setCurrentPage('workbench'); setLogTaskId(null) }} />
+  }
+
   return <div className="wb-shell">
     <header className="wb-topbar"><div className="wb-brand"><span>▥</span><strong>经营归因分析</strong><small>Analysis Studio</small></div>
-      <div className="wb-account"><button onClick={() => setAccountOpen(!accountOpen)}>{user.display_name} · {user.role === 'admin' ? '管理员' : '分析用户'}⌄</button>
-        {accountOpen && <div className="wb-account-menu"><p>{user.username}</p><button onClick={() => void signOut()}>退出登录</button></div>}</div>
+      <div className="wb-topbar-actions">
+        {user.role === 'admin' && (
+          <button className="wb-nav-btn" onClick={() => setCurrentPage('config')}>系统配置</button>
+        )}
+        <div className="wb-account"><button onClick={() => setAccountOpen(!accountOpen)}>{user.display_name} · {user.role === 'admin' ? '管理员' : '分析用户'}⌄</button>
+          {accountOpen && <div className="wb-account-menu"><p>{user.username}</p><button onClick={() => void signOut()}>退出登录</button></div>}</div>
+      </div>
     </header>
     <main className="wb-workspace">
       <aside className="wb-conversations"><button className="wb-new" onClick={() => void createConversation()} disabled={Boolean(activeTaskId)}>＋ 新建会话</button>
         <p className="wb-label">会话历史</p>
-        <div className="wb-session-list">{conversations.map((item) => <button key={item.conversation_id} className={item.conversation_id === conversationId ? 'wb-session active' : 'wb-session'} onClick={() => void loadConversation(item.conversation_id, item.last_task_id)}>
-          <strong>{item.title}</strong><span><i className={`wb-dot ${item.last_task_status ?? 'running'}`} />{taskLabel(item.last_task_status)} · {item.task_count} 次</span>
-        </button>)}</div>
-        <div className="wb-data-note"><b>演示数据窗口</b><span>2026.06.01–06.15<br />对比 2026.07.01–07.15</span></div>
+        <div className="wb-session-list">{conversations.map((item) => {
+          const isActive = item.conversation_id === conversationId
+          const isRenaming = item.conversation_id === renamingId
+          return <div key={item.conversation_id} className={isActive ? 'wb-session active' : 'wb-session'} onClick={() => { if (!isRenaming) void loadConversation(item.conversation_id, item.last_task_id) }} onDoubleClick={() => startRename(item.conversation_id, item.title)}>
+            {isRenaming ? (
+              <input className="wb-rename-input" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={confirmRename} onKeyDown={(e) => { if (e.key === 'Enter') void confirmRename(); if (e.key === 'Escape') cancelRename() }} autoFocus onClick={(e) => e.stopPropagation()} />
+            ) : (
+              <strong>{item.title}</strong>
+            )}
+            <span><i className={`wb-dot ${item.last_task_status ?? 'running'}`} />{taskLabel(item.last_task_status)} · {item.task_count} 次</span>
+            <button className="wb-delete-btn" onClick={(e) => { e.stopPropagation(); void removeConversation(item.conversation_id) }} title="删除会话">×</button>
+          </div>
+        })}</div>
+        <div className="wb-data-note"><b>演示数据窗口</b><span>2026.04.01–07.31<br />可对比任意月份或周</span></div>
       </aside>
       <section className="wb-dialog">
         <div className="wb-dialog-head"><div><p className="eyebrow">Conversation</p><h1>{conversations.find((item) => item.conversation_id === conversationId)?.title ?? '分析会话'}</h1></div><button className="wb-refresh" onClick={() => void reloadActiveConversation()}>刷新</button></div>
@@ -260,13 +357,13 @@ function Workbench() {
           <p className="wb-side-tip">支持 CSV、XLSX、XLS、TXT，解析后的表头与预览可作为本轮分析的补充证据。</p>
           <div className="wb-attachments">{detail?.attachments.length ? detail.attachments.map((attachment) => <article key={attachment.id}><div><strong>{attachment.filename}</strong><span>{attachment.parse_status} · {attachment.parse_summary.row_count ?? 0} 行</span></div><div><a href={attachmentDownloadUrl(attachment.id)}>下载</a><button onClick={() => void removeAttachment(attachment.id)}>删除</button></div></article>) : <p>还没有附件</p>}</div>
         </section>
-        <section className="wb-side-card wb-result"><div className="wb-side-heading"><div><p className="eyebrow">Result</p><h2>分析结果</h2></div>{selectedResult?.status === 'completed' && selectedResult.task_id && <a href={resultExportUrl(selectedResult.task_id)}>导出</a>}</div>
+        <section className="wb-side-card wb-result"><div className="wb-side-heading"><div><p className="eyebrow">Result</p><h2>分析结果</h2></div><div className="wb-result-actions">{selectedResult?.status === 'completed' && selectedResult.task_id && <><button onClick={copyResult} title="复制报告">复制</button><a href={resultExportUrl(selectedResult.task_id)}>导出</a></>}</div></div>
           {selectedResult?.status === 'completed' && <><span className="wb-verified">已通过证据校验</span><ReportText report={selectedResult.report} /></>}
           {selectedResult?.status === 'clarify' && <p className="wb-result-state">需要补充：{selectedResult.clarification_question}</p>}
           {selectedResult?.status === 'failed' && <p className="wb-result-state error">{selectedResult.errors.join('；')}</p>}
           {selectedResult?.status === 'cancelled' && <p className="wb-result-state">任务已取消。</p>}
           {!selectedResult && <p className="wb-result-state">选择一条历史任务，或发起新的分析后在此查看结构化结果与导出。</p>}
-          {detail?.tasks.length ? <div className="wb-task-list"><p className="wb-label">本会话任务</p>{detail.tasks.slice(0, 6).map((task) => <button key={task.task_id} onClick={() => void selectTask(task.task_id)}><i className={`wb-dot ${task.status}`} />{taskLabel(task.status)}<time>{dateLabel(task.created_at)}</time></button>)}</div> : null}
+          {detail?.tasks.length ? <div className="wb-task-list"><p className="wb-label">本会话任务</p>{detail.tasks.slice(0, 6).map((task) => <div key={task.task_id} style={{display: 'flex', alignItems: 'center', gap: '4px'}}><button style={{flex: 1}} onClick={() => void selectTask(task.task_id)}><i className={`wb-dot ${task.status}`} />{taskLabel(task.status)}<time>{dateLabel(task.created_at)}</time></button><button className="wb-task-log-btn" onClick={() => { setLogTaskId(task.task_id); setCurrentPage('logs') }}>日志</button></div>)}</div> : null}
         </section>
       </aside>
     </main>

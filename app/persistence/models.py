@@ -21,9 +21,11 @@ class AppUser(Base):
     __tablename__ = "app_users"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    external_user_id: Mapped[str | None] = mapped_column(String(120), nullable=True, unique=True, index=True)
     username: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="analyst")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
@@ -104,6 +106,14 @@ class AnalysisResult(Base):
         nullable=False,
         unique=True,
     )
+    # 规范六段结构字段
+    problem_definition: Mapped[str] = mapped_column(Text, nullable=False)
+    key_metrics_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    evidence_list_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    conclusion_text: Mapped[str] = mapped_column(Text, nullable=False)
+    missing_data_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    next_action_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 兼容字段（保留原有数据）
     report: Mapped[str] = mapped_column(Text, nullable=False)
     key_findings_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     analysis_result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
@@ -132,7 +142,11 @@ class ChatMessage(Base):
         String(64), ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text", index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 

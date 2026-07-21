@@ -24,33 +24,47 @@ PARSE_QUESTION_PROMPT = """你是一个经营分析助手。用户会提出关�
 请从问题中提取以下信息，并以JSON格式返回：
 
 1. problem：标准化的问题描述（一句话）
-2. metric：指标类型。本版本唯一可执行值是 order_conversion_rate（有效下单转化率）
-3. start_date：分析周期开始日期（格式：YYYY-MM-DD）
-4. end_date：分析周期结束日期（格式：YYYY-MM-DD）
-5. compare_start：对比周期开始日期（可选）
-6. compare_end：对比周期结束日期（可选）
-7. dimensions：需要分析的维度列表，可选值：channel（渠道）、device（设备）、region（地区）、user_type（用户类型）
-8. is_complete：信息是否完整（bool）
-9. clarification：如果信息不完整，需要追问的问题（string）
+2. metric：指标类型。可执行值：
+   - order_conversion_rate（有效下单转化率）
+   - market_performance（市场表现/渠道ROI/投放效率）
+3. time_periods：时间周期列表，支持多段对比
+   - 每个周期包含：start（开始日期）、end（结束日期）、label（标签，如"Q1"、"上周"）
+   - 如果用户只说"本月"，返回一个周期
+   - 如果用户说"对比上月"，返回两个周期
+   - 如果用户说"对比最近三个月"，返回三个周期
+4. granularity：时间粒度（可选）
+   - day：按天分析
+   - week：按周分析
+   - month：按月分析
+   - quarter：按季度分析
+   - 如果不指定，系统会根据时间跨度自动推断
+5. dimensions：需要分析的维度列表，可选值：channel（渠道）、device（设备）、region（地区）、user_type（用户类型）
+6. is_complete：信息是否完整（bool）
+7. clarification：如果信息不完整，需要追问的问题（string）
 
 规则：
+- 支持相对时间表达："本周"、"上周"、"本月"、"上月"、"本季度"、"上季度"、"过去7天"、"最近一个月"
 - 如果用户说"本月"，使用当前月份
 - 如果用户说"上月"，使用上个月
 - 本演示中，用户说"本月"或"上月"时，必须使用上述可用窗口，不得自行扩展到没有数据的日期
-- 如果用户没有指定对比周期，默认对比上一个同等长度的周期
+- 如果用户说"对比最近三个月"，生成三个连续的时间周期
+- 如果用户说"按周分析"，granularity设为"week"
 - 如果用户没有指定维度，默认分析所有维度
 - 如果时间范围不明确，is_complete设为false
-- 销售额、营收、ROI、客单价、库存/周转率等不是当前分析内核已实现的指标；遇到这类请求时，metric 写 unsupported，is_complete 设为 false，并在 clarification 中说明当前仅支持有效下单转化率及其维度拆解
+- 当用户询问ROI、投放效率、广告效率、渠道效率、市场表现时，metric设为market_performance
+- 当用户询问转化率、下单转化时，metric设为order_conversion_rate
+- 客单价、库存/周转率等不是当前分析内核已实现的指标；遇到这类请求时，metric写unsupported，is_complete设为false，并在clarification中说明
 
 返回格式（只返回JSON，不要其他文字）：
 ```json
 {{
     "problem": "...",
     "metric": "order_conversion_rate",
-    "start_date": "YYYY-MM-DD",
-    "end_date": "YYYY-MM-DD",
-    "compare_start": "YYYY-MM-DD",
-    "compare_end": "YYYY-MM-DD",
+    "time_periods": [
+        {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "label": "上月"}},
+        {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "label": "本月"}}
+    ],
+    "granularity": "day",
     "dimensions": ["channel", "device"],
     "is_complete": true,
     "clarification": null
@@ -80,16 +94,19 @@ PARSE_QUESTION_WITH_HISTORY_PROMPT = """你是一个经营分析助手。用户�
 - 如果历史中有追问（status=clarify），用户最新消息很可能是对追问的补充回答
 - 将历史中已明确的信息（如指标、维度）与最新补充合并
 - 如果历史中已有已完成的分析（status=completed），最新消息可能是追问或深入分析
+- 支持灵活的时间表达："本周"、"上周"、"本月"、"上月"、"本季度"、"上季度"、"过去7天"、"最近一个月"
+- 支持多时间段对比："对比最近三个月"、"按周分析"
 
 请以JSON格式返回（字段含义同上）：
 ```json
 {{
     "problem": "合并后的完整问题描述",
-    "metric": "order_conversion_rate",
-    "start_date": "YYYY-MM-DD",
-    "end_date": "YYYY-MM-DD",
-    "compare_start": "YYYY-MM-DD",
-    "compare_end": "YYYY-MM-DD",
+    "metric": "order_conversion_rate 或 market_performance",
+    "time_periods": [
+        {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "label": "Q1"}},
+        {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "label": "Q2"}}
+    ],
+    "granularity": "week",
     "dimensions": ["channel", "device"],
     "is_complete": true,
     "clarification": null

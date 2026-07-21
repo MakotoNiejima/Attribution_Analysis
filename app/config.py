@@ -46,13 +46,13 @@ def get_engine():
 
 
 # ============================================================
-# 时间范围配置
+# 时间范围配置（演示数据覆盖 2026-04-01 ~ 2026-08-01）
 # ============================================================
 
 BASELINE_START = os.getenv("BASELINE_START", "2026-06-01 00:00:00")
-BASELINE_END = os.getenv("BASELINE_END", "2026-06-15 00:00:00")
+BASELINE_END = os.getenv("BASELINE_END", "2026-07-01 00:00:00")
 CURRENT_START = os.getenv("CURRENT_START", "2026-07-01 00:00:00")
-CURRENT_END = os.getenv("CURRENT_END", "2026-07-15 00:00:00")
+CURRENT_END = os.getenv("CURRENT_END", "2026-08-01 00:00:00")
 
 
 # ============================================================
@@ -68,7 +68,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 工作台、鉴权与文件存储配置
 # ============================================================
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5174")
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes"}
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-before-production")
 DEV_DEFAULT_USERNAME = os.getenv("DEV_DEFAULT_USERNAME", "local-analyst")
@@ -100,7 +100,7 @@ def reload_runtime_config() -> dict[str, str | bool]:
     CURRENT_END = os.getenv("CURRENT_END", "2026-07-15 00:00:00")
     OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5174")
     AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes"}
     AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-before-production")
     DEV_DEFAULT_USERNAME = os.getenv("DEV_DEFAULT_USERNAME", "local-analyst")

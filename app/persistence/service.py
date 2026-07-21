@@ -96,6 +96,22 @@ class AnalysisPersistenceService:
             "analysis_results": {
                 "export_path": "VARCHAR(500)",
                 "exported_at": "DATETIME",
+                "problem_definition": "TEXT",
+                "key_metrics_json": "JSON",
+                "evidence_list_json": "JSON",
+                "conclusion_text": "TEXT",
+                "missing_data_text": "TEXT",
+                "next_action_text": "TEXT",
+            },
+            "app_users": {
+                "external_user_id": "VARCHAR(120)",
+                "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+            },
+            "chat_messages": {
+                "message_type": "VARCHAR(32) NOT NULL DEFAULT 'text'",
+                "tool_name": "VARCHAR(64)",
+                "tool_status": "VARCHAR(20)",
+                "seq_no": "INT NOT NULL DEFAULT 0",
             },
         }
         inspector = inspect(self.engine)
@@ -166,6 +182,15 @@ class AnalysisPersistenceService:
                 self._assert_conversation_access(conversation, owner_id)
                 if conversation.status != "active":
                     raise ValueError("该会话已归档或删除，不能继续发起分析")
+                # 单会话单运行任务约束
+                running_count = session.execute(
+                    select(func.count()).select_from(AnalysisTask).where(
+                        AnalysisTask.conversation_id == resolved_conversation_id,
+                        AnalysisTask.status == "running",
+                    )
+                ).scalar() or 0
+                if running_count > 0:
+                    raise ValueError("该会话已有正在运行的分析任务，请等待完成后再发起新任务")
                 conversation.updated_at = now
                 conversation.last_message_at = now
             session.add(task)
@@ -198,7 +223,10 @@ class AnalysisPersistenceService:
         matched_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """将运行中任务收束为澄清、成功或失败状态。"""
-        if status not in {"clarify", "completed", "failed", "cancelled"}:
+        # 兼容旧代码：将 completed 映射为 success
+        if status == "completed":
+            status = "success"
+        if status not in {"clarify", "success", "failed", "cancelled"}:
             raise ValueError(f"不支持的任务终态: {status}")
 
         now = utc_now()
@@ -215,15 +243,32 @@ class AnalysisPersistenceService:
             task.conversation.updated_at = now
             task.conversation.last_message_at = now
 
-            if status == "completed":
+            if status == "success":
                 if not report:
                     raise ValueError("已完成任务必须保存最终报告")
                 if task.result is not None:
                     session.delete(task.result)
                     session.flush()
+                
+                # 生成规范六段结构
+                problem_definition = task.question
+                key_metrics = self._extract_key_metrics(analysis_result or {})
+                evidence_list = self._extract_evidence_list(analysis_result or {}, matched_events or [])
+                conclusion_text = self._extract_conclusion(report, key_findings or [])
+                missing_data_text = "当前分析基于已有数据完成，无缺失数据项。"
+                next_action_text = self._extract_next_actions(key_findings or [])
+                
                 session.add(
                     AnalysisResult(
                         task_id=task.id,
+                        # 规范六段结构
+                        problem_definition=problem_definition,
+                        key_metrics_json=to_jsonable(key_metrics),
+                        evidence_list_json=to_jsonable(evidence_list),
+                        conclusion_text=conclusion_text,
+                        missing_data_text=missing_data_text,
+                        next_action_text=next_action_text,
+                        # 兼容字段
                         report=report,
                         key_findings_json=to_jsonable(key_findings or []),
                         analysis_result_json=to_jsonable(analysis_result or {}),
@@ -300,6 +345,7 @@ class AnalysisPersistenceService:
                     "last_task_status": last_task.status if last_task else None,
                     "status": conversation.status,
                     "owner_id": conversation.owner_id,
+                    "last_message_at": conversation.last_message_at,
                     "updated_at": conversation.updated_at,
                     "created_at": conversation.created_at,
                 })
@@ -351,7 +397,7 @@ class AnalysisPersistenceService:
             context: list[dict[str, Any]] = []
             for task in tasks:
                 summary: str | None = None
-                if task.status == "completed" and task.result:
+                if task.status == "success" and task.result:
                     findings = task.result.key_findings_json or []
                     parts = []
                     for f in findings[:3]:
@@ -388,6 +434,13 @@ class AnalysisPersistenceService:
                 "evidence": result.evidence_json if result else {},
                 "matched_events": result.matched_events_json if result else [],
                 "export_available": bool(result and result.export_path),
+                # 规范六段结构
+                "problem_definition": result.problem_definition if result else None,
+                "key_metrics": result.key_metrics_json if result else [],
+                "evidence_list": result.evidence_list_json if result else [],
+                "conclusion_text": result.conclusion_text if result else None,
+                "missing_data_text": result.missing_data_text if result else None,
+                "next_action_text": result.next_action_text if result else None,
             })
             return detail
 
@@ -746,7 +799,7 @@ class AnalysisPersistenceService:
     def _assistant_message_content(
         *, status: str, report: str | None, clarification_question: str | None, errors: list[str]
     ) -> str:
-        if status == "completed":
+        if status == "success":
             return report or "分析已完成。"
         if status == "clarify":
             return clarification_question or "请补充分析范围后重试。"
@@ -821,11 +874,152 @@ class AnalysisPersistenceService:
             "conversation_id": task.conversation_id,
             "question": task.question,
             "status": task.status,
+            "current_step": task.current_node,
             "cancel_requested": task.cancel_requested,
             "created_at": task.created_at,
             "started_at": task.started_at,
             "finished_at": task.finished_at,
         }
+
+    @staticmethod
+    def _extract_key_metrics(analysis_result: dict[str, Any]) -> list[dict[str, Any]]:
+        """从分析结果中提取关键指标（规范六段结构）"""
+        metrics = []
+        
+        # 转化率分析
+        if "baseline_funnel" in analysis_result:
+            baseline = analysis_result.get("baseline_funnel", {})
+            current = analysis_result.get("current_funnel", {})
+            
+            if baseline.get("order_rate") is not None:
+                metrics.append({
+                    "metric_name": "基准期下单转化率",
+                    "metric_value": baseline["order_rate"],
+                    "metric_unit": "%",
+                    "metric_period": "baseline"
+                })
+            
+            if current.get("order_rate") is not None:
+                metrics.append({
+                    "metric_name": "当前期下单转化率",
+                    "metric_value": current["order_rate"],
+                    "metric_unit": "%",
+                    "metric_period": "current"
+                })
+            
+            # 转化率变化
+            if baseline.get("order_rate") and current.get("order_rate"):
+                change = current["order_rate"] - baseline["order_rate"]
+                metrics.append({
+                    "metric_name": "转化率变化",
+                    "metric_value": change,
+                    "metric_unit": "%",
+                    "metric_period": "comparison"
+                })
+        
+        # 市场表现分析
+        if "baseline_summary" in analysis_result:
+            baseline = analysis_result.get("baseline_summary", {})
+            current = analysis_result.get("current_summary", {})
+            
+            if baseline.get("overall_roi") is not None:
+                metrics.append({
+                    "metric_name": "基准期整体ROI",
+                    "metric_value": baseline["overall_roi"],
+                    "metric_unit": "",
+                    "metric_period": "baseline"
+                })
+            
+            if current.get("overall_roi") is not None:
+                metrics.append({
+                    "metric_name": "当前期整体ROI",
+                    "metric_value": current["overall_roi"],
+                    "metric_unit": "",
+                    "metric_period": "current"
+                })
+        
+        return metrics
+
+    @staticmethod
+    def _extract_evidence_list(analysis_result: dict[str, Any], matched_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """从分析结果中提取证据列表（规范六段结构）"""
+        evidence = []
+        
+        # 从维度分解中提取证据
+        for dim_key in ["channel_decomposition", "device_decomposition", "region_decomposition", "user_type_decomposition"]:
+            dim_data = analysis_result.get(dim_key, {})
+            contributions = dim_data.get("contributions", [])
+            
+            for contrib in contributions[:3]:  # 每个维度最多3条证据
+                if abs(contrib.get("total_effect", 0)) > 0.001:  # 只保留有显著影响的
+                    evidence.append({
+                        "source_type": "analysis",
+                        "source_name": f"{dim_key.replace('_decomposition', '')}维度分析",
+                        "evidence_text": f"{contrib.get('group_name', '未知')} 总效应 {contrib.get('total_effect', 0):.4f}",
+                        "related_metric": contrib.get("group_name", ""),
+                        "confidence": 0.8
+                    })
+        
+        # 从匹配的事件中提取证据
+        for event in matched_events[:5]:  # 最多5条事件证据
+            evidence.append({
+                "source_type": "event",
+                "source_name": event.get("event_name", "业务事件"),
+                "evidence_text": event.get("description", ""),
+                "related_metric": event.get("metric", "转化率"),
+                "confidence": 0.7
+            })
+        
+        return evidence
+
+    @staticmethod
+    def _extract_conclusion(report: str, key_findings: list[dict[str, Any]]) -> str:
+        """从报告和关键发现中提取结论（规范六段结构）"""
+        if not report:
+            return "分析未完成"
+        
+        # 尝试从报告中提取结论部分
+        lines = report.split("\n")
+        conclusion_lines = []
+        in_conclusion = False
+        
+        for line in lines:
+            if "结论" in line or "总结" in line or "归因" in line:
+                in_conclusion = True
+                continue
+            if in_conclusion:
+                if line.strip() and not line.startswith("#"):
+                    conclusion_lines.append(line.strip())
+                elif conclusion_lines and line.startswith("#"):
+                    break
+        
+        if conclusion_lines:
+            return "\n".join(conclusion_lines[:5])  # 最多5行
+        
+        # 如果没有明确的结论部分，返回报告的前几段
+        paragraphs = [p.strip() for p in report.split("\n\n") if p.strip()]
+        return "\n\n".join(paragraphs[:3]) if paragraphs else report[:500]
+
+    @staticmethod
+    def _extract_next_actions(key_findings: list[dict[str, Any]]) -> str:
+        """从关键发现中提取下一步建议（规范六段结构）"""
+        actions = []
+        
+        for finding in key_findings[:3]:  # 最多3条建议
+            dimension = finding.get("dimension", "")
+            group = finding.get("group", "")
+            effect = finding.get("effect", 0)
+            
+            if effect < -0.01:  # 负面影响
+                actions.append(f"针对{dimension}-{group}的下降趋势，建议深入分析原因并制定改善措施")
+            elif effect > 0.01:  # 正面影响
+                actions.append(f"继续优化{dimension}-{group}的成功策略，扩大正面影响")
+        
+        if not actions:
+            actions.append("持续监控关键指标变化")
+            actions.append("定期回顾分析结果，调整业务策略")
+        
+        return "\n".join(actions)
 
 
 @lru_cache(maxsize=1)

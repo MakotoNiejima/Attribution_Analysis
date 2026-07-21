@@ -12,6 +12,7 @@ LangGraph 图状态定义
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from app.agent.time_types import TimeGranularity
 
 @dataclass
 class AnalysisState:
@@ -31,6 +32,8 @@ class AnalysisState:
     parsed_end: Optional[datetime] = None
     parsed_compare_start: Optional[datetime] = None
     parsed_compare_end: Optional[datetime] = None
+    parsed_time_periods: List[Dict[str, Any]] = field(default_factory=list)
+    parsed_granularity: Optional[TimeGranularity] = None
     parsed_dimensions: List[str] = field(default_factory=list)
     is_info_complete: bool = False
     clarification_question: Optional[str] = None
@@ -40,6 +43,7 @@ class AnalysisState:
 
     # 分析结果
     analysis_result: Optional[Dict[str, Any]] = None
+    analysis_type: Optional[str] = None  # "conversion" 或 "market"
 
     # 主要发现
     key_findings: List[Dict[str, Any]] = field(default_factory=list)
