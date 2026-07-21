@@ -147,7 +147,7 @@ export type ClarifyResponse = ResponseBase & {
 }
 
 export type CompletedResponse = ResponseBase & {
-  status: 'completed'
+  status: 'success'
   report: string
   key_findings: Finding[]
   analysis_result: AnalysisResult
@@ -186,7 +186,7 @@ export type TaskProgressEvent = {
   task?: AnalysisTaskDetail
 }
 
-export type TaskStatus = 'running' | 'clarify' | 'completed' | 'failed' | 'cancelled'
+export type TaskStatus = 'queued' | 'running' | 'clarify' | 'success' | 'failed' | 'cancelled'
 
 export type ConversationSummary = {
   conversation_id: string
@@ -208,6 +208,21 @@ export type AnalysisTaskSummary = {
   finished_at?: string | null
 }
 
+export type KeyMetric = {
+  metric_name: string
+  metric_value: number
+  metric_unit: string
+  metric_period: string
+}
+
+export type EvidenceItem = {
+  source_type: string
+  source_name: string
+  evidence_text: string
+  related_metric: string
+  confidence: number
+}
+
 export type AnalysisTaskDetail = AnalysisTaskSummary & {
   clarification_question?: string | null
   errors: string[]
@@ -216,6 +231,13 @@ export type AnalysisTaskDetail = AnalysisTaskSummary & {
   analysis_result: AnalysisResult
   evidence: Record<string, unknown>
   matched_events: BusinessEvent[]
+  // 规范六段结构
+  problem_definition?: string | null
+  key_metrics?: KeyMetric[]
+  evidence_list?: EvidenceItem[]
+  conclusion_text?: string | null
+  missing_data_text?: string | null
+  next_action_text?: string | null
 }
 
 export type AppUser = {

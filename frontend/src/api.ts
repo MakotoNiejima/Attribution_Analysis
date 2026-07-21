@@ -14,6 +14,29 @@ import type {
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
 const workbenchBaseUrl = (import.meta.env.VITE_WORKBENCH_API_BASE_URL ?? '/api').replace(/\/$/, '')
 
+export async function withRetry<T>(fn: () => Promise<T>, retries = 3, delayMs = 800): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (attempt === retries) throw error
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)))
+    }
+  }
+  throw new Error('unreachable')
+}
+
+export async function waitForBackend(maxWaitMs = 30000, intervalMs = 1000): Promise<void> {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch('/health', { signal: AbortSignal.timeout(2000) })
+      if (res.ok) return
+    } catch { /* backend not ready yet */ }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+}
+
 function readError(payload: unknown): string {
   if (typeof payload === 'object' && payload !== null) {
     const detail = (payload as { detail?: unknown }).detail
@@ -192,16 +215,19 @@ export async function uploadAttachment(conversationId: string, file: File): Prom
   })
   const payload: unknown = await response.json().catch(() => null)
   if (!response.ok) throw new Error(readError(payload))
-  // 规范接口返回 attachment_id, file_name, file_path
-  const result = payload as { attachment_id: string; file_name: string; file_path: string; status: string }
+  // 规范接口返回 attachment_id, file_name, file_path, parse_status, parse_summary
+  const result = payload as {
+    attachment_id: string; file_name: string; file_path: string; status: string;
+    parse_status?: string; parse_summary?: { row_count?: number; columns?: Array<{ name: string }>; preview?: Array<Record<string, string>> }
+  }
   return {
     id: result.attachment_id,
     conversation_id: conversationId,
     filename: result.file_name,
     file_type: file.type || 'application/octet-stream',
     file_size: file.size,
-    parse_status: 'uploaded',
-    parse_summary: {},
+    parse_status: result.parse_status ?? 'uploaded',
+    parse_summary: result.parse_summary ?? {},
     created_at: new Date().toISOString(),
   }
 }

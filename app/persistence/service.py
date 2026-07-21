@@ -154,6 +154,10 @@ class AnalysisPersistenceService:
                 "start_seq_no": "INT NOT NULL DEFAULT 0",
                 "end_seq_no": "INT NOT NULL DEFAULT 0",
             },
+            "websocket_tokens": {
+                "conversation_id": "VARCHAR(64) NOT NULL",
+                "task_id": "VARCHAR(64) NOT NULL",
+            },
         }
         inspector = inspect(self.engine)
         table_names = set(inspector.get_table_names())
@@ -170,7 +174,43 @@ class AnalysisPersistenceService:
         for old_name, new_name in tables_renamed:
             table_names.remove(old_name)
             table_names.add(new_name)
-        
+
+        # 修复仍引用旧表名的外键约束（每次启动都检查，确保上一次部分迁移也能修复）
+        if dialect == "mysql":
+            fk_fixes = [
+                ("analysis_tasks", "conversation_id", "analysis_conversations", "conversations"),
+                ("analysis_tasks", "user_id", "app_users", "users"),
+                ("messages", "conversation_id", "analysis_conversations", "conversations"),
+                ("messages", "user_id", "app_users", "users"),
+                ("attachments", "conversation_id", "analysis_conversations", "conversations"),
+                ("attachments", "owner_id", "app_users", "users"),
+                ("context_summaries", "conversation_id", "analysis_conversations", "conversations"),
+                ("websocket_tokens", "conversation_id", "analysis_conversations", "conversations"),
+                ("websocket_tokens", "user_id", "app_users", "users"),
+                ("analysis_results", "conversation_id", "analysis_conversations", "conversations"),
+            ]
+            with self.engine.begin() as connection:
+                for child_table, column, old_ref, new_ref in fk_fixes:
+                    if child_table not in table_names:
+                        continue
+                    try:
+                        fks = connection.execute(text(
+                            f"SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                            f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{child_table}' "
+                            f"AND COLUMN_NAME = '{column}' AND REFERENCED_TABLE_NAME = '{old_ref}'"
+                        )).fetchall()
+                        for (fk_name,) in fks:
+                            connection.execute(text(
+                                f"ALTER TABLE {child_table} DROP FOREIGN KEY {fk_name}"
+                            ))
+                            connection.execute(text(
+                                f"ALTER TABLE {child_table} ADD CONSTRAINT {fk_name} "
+                                f"FOREIGN KEY ({column}) REFERENCES {new_ref}(id) ON DELETE CASCADE"
+                            ))
+                            print(f"[migrate] 修复外键: {child_table}.{column} -> {old_ref} => {new_ref}")
+                    except Exception as exc:
+                        print(f"[migrate] 外键修复跳过 {child_table}.{column}: {exc}")
+
         # 重新获取 inspector 以反映表重命名后的状态
         inspector = inspect(self.engine)
         
@@ -990,23 +1030,12 @@ class AnalysisPersistenceService:
 
     @staticmethod
     def _task_summary(task: AnalysisTask) -> dict[str, Any]:
-        # Map backend status to frontend status for compatibility
-        status_mapping = {
-            "success": "completed",
-            "failed": "failed",
-            "cancelled": "cancelled",
-            "clarify": "clarify",
-            "running": "running",
-            "queued": "running",
-        }
-        frontend_status = status_mapping.get(task.task_status, task.task_status)
-        
         return {
             "task_id": task.id,
             "conversation_id": task.conversation_id,
             "input_text": task.input_text,
             "task_status": task.task_status,
-            "status": frontend_status,
+            "status": task.task_status,
             "current_step": task.current_step,
             "cancel_requested": task.cancel_requested,
             "error_message": task.error_message,

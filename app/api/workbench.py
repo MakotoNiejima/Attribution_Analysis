@@ -517,4 +517,10 @@ async def upload_attachment_compat(
         "file_path": attachment.get("stored_path"),
         "status": "ok",
         "message": result.get("message", ""),
+        "parse_status": "parsed",
+        "parse_summary": {
+            "row_count": attachment.get("row_count"),
+            "columns": attachment.get("columns"),
+            "preview": attachment.get("preview"),
+        },
     }

@@ -17,6 +17,8 @@ import {
   resultExportUrl,
   sendChatMessage,
   uploadAttachment,
+  withRetry,
+  waitForBackend,
 } from './api'
 import type {
   AnalysisResponse,
@@ -26,6 +28,8 @@ import type {
   ChatStreamEvent,
   CompletedResponse,
   ConversationSummary,
+  KeyMetric,
+  EvidenceItem,
   TaskStatus,
 } from './types'
 import { ConfigPage } from './ConfigPage'
@@ -38,7 +42,7 @@ const EXAMPLES = [
 ]
 
 function taskLabel(status?: TaskStatus | null) {
-  return ({ running: '分析中', clarify: '待补充', completed: '已完成', failed: '失败', cancelled: '已取消' })[status ?? 'running']
+  return ({ queued: '排队中', running: '分析中', clarify: '待补充', success: '已完成', failed: '失败', cancelled: '已取消' })[status ?? 'running']
 }
 
 function dateLabel(value: string) {
@@ -47,8 +51,8 @@ function dateLabel(value: string) {
 }
 
 function responseFromTask(task: AnalysisTaskDetail): AnalysisResponse | null {
-  if (task.status === 'completed' && task.report) {
-    return { status: 'completed', conversation_id: task.conversation_id, task_id: task.task_id, report: task.report, key_findings: task.key_findings, analysis_result: task.analysis_result, evidence: task.evidence, matched_events: task.matched_events }
+  if (task.status === 'success' && task.report) {
+    return { status: 'success', conversation_id: task.conversation_id, task_id: task.task_id, report: task.report, key_findings: task.key_findings, analysis_result: task.analysis_result, evidence: task.evidence, matched_events: task.matched_events }
   }
   if (task.status === 'clarify' && task.clarification_question) return { status: 'clarify', conversation_id: task.conversation_id, task_id: task.task_id, clarification_question: task.clarification_question }
   if (task.status === 'failed') return { status: 'failed', conversation_id: task.conversation_id, task_id: task.task_id, errors: task.errors }
@@ -65,6 +69,79 @@ function ReportText({ report }: { report: string }) {
     if (line.startsWith('- ')) return <p className="wb-list" key={index}>• {line.slice(2)}</p>
     return <p key={index}>{line}</p>
   })}</div>
+}
+
+function periodLabel(period: string) {
+  return { baseline: '基准期', current: '当前期', comparison: '变化' }[period] ?? period
+}
+
+function StructuredResult({ task }: { task: AnalysisTaskDetail }) {
+  const metrics = task.key_metrics ?? []
+  const evidenceList = task.evidence_list ?? []
+  return (
+    <div className="wb-structured">
+      {task.problem_definition && (
+        <section className="wb-section">
+          <h3>问题定义</h3>
+          <p>{task.problem_definition}</p>
+        </section>
+      )}
+      {metrics.length > 0 && (
+        <section className="wb-section">
+          <h3>关键指标</h3>
+          <table className="wb-metrics-table">
+            <thead><tr><th>指标</th><th>数值</th><th>单位</th><th>时期</th></tr></thead>
+            <tbody>
+              {metrics.map((m, i) => (
+                <tr key={i}>
+                  <td>{m.metric_name}</td>
+                  <td>{typeof m.metric_value === 'number' ? m.metric_value.toLocaleString('zh-CN', { maximumFractionDigits: 4 }) : m.metric_value}</td>
+                  <td>{m.metric_unit || '—'}</td>
+                  <td>{periodLabel(m.metric_period)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+      {evidenceList.length > 0 && (
+        <section className="wb-section">
+          <h3>证据列表</h3>
+          <table className="wb-metrics-table">
+            <thead><tr><th>来源</th><th>证据</th><th>关联指标</th><th>置信度</th></tr></thead>
+            <tbody>
+              {evidenceList.map((e, i) => (
+                <tr key={i}>
+                  <td>{e.source_name}</td>
+                  <td>{e.evidence_text}</td>
+                  <td>{e.related_metric || '—'}</td>
+                  <td>{typeof e.confidence === 'number' ? `${(e.confidence * 100).toFixed(0)}%` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+      {task.conclusion_text && (
+        <section className="wb-section">
+          <h3>归因结论</h3>
+          <p>{task.conclusion_text}</p>
+        </section>
+      )}
+      {task.missing_data_text && (
+        <section className="wb-section">
+          <h3>待补充数据</h3>
+          <p>{task.missing_data_text}</p>
+        </section>
+      )}
+      {task.next_action_text && (
+        <section className="wb-section">
+          <h3>下一步建议</h3>
+          <p>{task.next_action_text}</p>
+        </section>
+      )}
+    </div>
+  )
 }
 
 function LoginCard({ onLoggedIn }: { onLoggedIn: (user: AppUser) => void }) {
@@ -96,6 +173,7 @@ function Workbench() {
   const [question, setQuestion] = useState(EXAMPLES[0])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [selectedResult, setSelectedResult] = useState<AnalysisResponse | null>(null)
+  const [selectedTask, setSelectedTask] = useState<AnalysisTaskDetail | null>(null)
   const [events, setEvents] = useState<ChatStreamEvent[]>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -108,7 +186,11 @@ function Workbench() {
   const socketRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    void getCurrentUser().then(setUser).catch(() => setUser(null)).finally(() => setAuthReady(true))
+    void (async () => {
+      await waitForBackend()
+      try { setUser(await getCurrentUser()) } catch { setUser(null) }
+      setAuthReady(true)
+    })()
     return () => socketRef.current?.close()
   }, [])
 
@@ -129,12 +211,13 @@ function Workbench() {
     setDetail(loaded)
     const taskId = preferredTaskId ?? loaded.tasks[0]?.task_id
     if (taskId) await selectTask(taskId)
-    else setSelectedResult(null)
+    else { setSelectedResult(null); setSelectedTask(null) }
   }
 
   async function initializeWorkspace() {
     try {
-      const rows = await refreshConversations()
+      const rows = await withRetry(listChats, 2, 500)
+      setConversations(rows)
       if (rows[0]) await loadConversation(rows[0].conversation_id, rows[0].last_task_id)
       else {
         const created = await createChat('我的归因分析')
@@ -147,6 +230,7 @@ function Workbench() {
   async function selectTask(taskId: string) {
     try {
       const task = await getWorkbenchTask(taskId)
+      setSelectedTask(task)
       setSelectedResult(responseFromTask(task))
       if (task.status === 'running') {
         setActiveTaskId(taskId)
@@ -188,7 +272,7 @@ function Workbench() {
         if (event.type === 'message_delta' && event.delta_text) {
           streamingContent += event.delta_text
           setSelectedResult({
-            status: 'completed',
+            status: 'success',
             conversation_id: '',
             task_id: taskId,
             report: streamingContent,
@@ -226,7 +310,7 @@ function Workbench() {
   async function submit(event?: FormEvent) {
     event?.preventDefault()
     if (!conversationId || !question.trim() || busy || activeTaskId) return
-    setBusy(true); setNotice(null); setSelectedResult(null); setEvents([])
+    setBusy(true); setNotice(null); setSelectedResult(null); setSelectedTask(null); setEvents([])
     try {
       const task = await sendChatMessage(conversationId, question.trim())
       setQuestion('')
@@ -293,6 +377,7 @@ function Workbench() {
         setConversationId(null)
         setDetail(null)
         setSelectedResult(null)
+        setSelectedTask(null)
       }
       await refreshConversations()
       setNotice('会话已删除')
@@ -300,7 +385,7 @@ function Workbench() {
   }
 
   function copyResult() {
-    if (!selectedResult || selectedResult.status !== 'completed') return
+    if (!selectedResult || selectedResult.status !== 'success') return
     const text = selectedResult.report
     navigator.clipboard.writeText(text).then(() => {
       setNotice('报告已复制到剪贴板')
@@ -309,7 +394,7 @@ function Workbench() {
     })
   }
 
-  if (!authReady) return <main className="login-page"><p>正在加载工作台…</p></main>
+  if (!authReady) return <main className="login-page"><p>正在连接后端服务…</p></main>
   if (!user) return <LoginCard onLoggedIn={setUser} />
 
   // 配置页面
@@ -357,7 +442,7 @@ function Workbench() {
           <span>{message.role === 'user' ? '你' : 'AI'}</span><div>{message.role === 'assistant' ? <ReportText report={message.content} /> : <p>{message.content}</p>}<time>{dateLabel(message.created_at)}</time></div>
         </article>) : <div className="wb-empty"><span>◌</span><h2>从一个经营问题开始</h2><p>可提问转化、渠道、设备或漏斗问题；上传表格后，分析器会把它当作补充证据。</p>{EXAMPLES.map((example) => <button key={example} onClick={() => setQuestion(example)}>{example}</button>)}</div>}</div>
         {activeTaskId && <div className="wb-live"><div><b>正在实时分析</b><span>{events.slice(-1)[0]?.message ?? events.slice(-1)[0]?.label ?? '正在进入分析流程'}</span></div><button onClick={() => void cancelTask()}>取消任务</button><ol>{events.filter((event) => event.type === 'tool_start' || event.type === 'tool_finish').slice(-5).map((event, index) => <li key={`${event.type}-${index}`} className={event.type === 'tool_finish' ? 'done' : ''}>{event.label || event.node || '分析步骤'}</li>)}</ol></div>}
-        <form className="wb-composer" onSubmit={submit}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：为什么本期转化率下降？" disabled={Boolean(activeTaskId)} /><div><span>Ctrl / ⌘ + Enter 发送</span><button type="submit" disabled={!question.trim() || Boolean(activeTaskId) || busy}>{activeTaskId ? '分析中…' : '开始分析 →'}</button></div></form>
+        <form className="wb-composer" onSubmit={submit}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：为什么本期转化率下降？" maxLength={1000} disabled={Boolean(activeTaskId)} /><div><span>Ctrl / ⌘ + Enter 发送</span><button type="submit" disabled={!question.trim() || Boolean(activeTaskId) || busy}>{activeTaskId ? '分析中…' : '开始分析 →'}</button></div></form>
       </section>
       <aside className="wb-side">
         <section className="wb-side-card"><div className="wb-side-heading"><div><p className="eyebrow">Attachments</p><h2>会话附件</h2></div><button onClick={() => fileInputRef.current?.click()} disabled={!conversationId || busy}>上传</button></div>
@@ -365,8 +450,10 @@ function Workbench() {
           <p className="wb-side-tip">支持 CSV、XLSX、XLS、TXT，解析后的表头与预览可作为本轮分析的补充证据。</p>
           <div className="wb-attachments">{detail?.attachments.length ? detail.attachments.map((attachment) => <article key={attachment.id}><div><strong>{attachment.filename}</strong><span>{attachment.parse_status} · {attachment.parse_summary.row_count ?? 0} 行</span></div><div><a href={attachmentDownloadUrl(attachment.id)}>下载</a><button onClick={() => void removeAttachment(attachment.id)}>删除</button></div></article>) : <p>还没有附件</p>}</div>
         </section>
-        <section className="wb-side-card wb-result"><div className="wb-side-heading"><div><p className="eyebrow">Result</p><h2>分析结果</h2></div><div className="wb-result-actions">{selectedResult?.status === 'completed' && selectedResult.task_id && <><button onClick={copyResult} title="复制报告">复制</button><a href={resultExportUrl(selectedResult.task_id)}>导出</a></>}</div></div>
-          {selectedResult?.status === 'completed' && <><span className="wb-verified">已通过证据校验</span><ReportText report={selectedResult.report} /></>}
+        <section className="wb-side-card wb-result"><div className="wb-side-heading"><div><p className="eyebrow">Result</p><h2>分析结果</h2></div><div className="wb-result-actions">{selectedResult?.status === 'success' && selectedResult.task_id && <><button onClick={copyResult} title="复制报告">复制</button><a href={resultExportUrl(selectedResult.task_id)}>导出</a></>}</div></div>
+          {selectedResult?.status === 'success' && <><span className="wb-verified">已通过证据校验</span>
+            {selectedTask?.problem_definition ? <StructuredResult task={selectedTask} /> : <ReportText report={selectedResult.report} />}
+          </>}
           {selectedResult?.status === 'clarify' && <p className="wb-result-state">需要补充：{selectedResult.clarification_question}</p>}
           {selectedResult?.status === 'failed' && <p className="wb-result-state error">{selectedResult.errors.join('；')}</p>}
           {selectedResult?.status === 'cancelled' && <p className="wb-result-state">任务已取消。</p>}

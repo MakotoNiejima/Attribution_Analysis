@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import Workbench from './Workbench'
-import { createAnalysisTask, getTask, listConversationTasks, listConversations, taskStreamUrl } from './api'
+import { createAnalysisTask, getTask, listConversationTasks, listConversations, taskStreamUrl, withRetry, waitForBackend } from './api'
 import type {
   AnalysisResponse,
   AnalysisTaskDetail,
@@ -21,7 +21,7 @@ const EXAMPLE_QUESTIONS = [
 ]
 
 const ACTIVE_CONVERSATION_KEY = 'attribution-analysis-active-conversation'
-type ViewState = 'idle' | 'loading' | 'completed' | 'clarify' | 'failed' | 'cancelled'
+type ViewState = 'idle' | 'loading' | 'success' | 'clarify' | 'failed' | 'cancelled'
 
 function createConversationId() {
   return globalThis.crypto?.randomUUID?.() ?? `analysis-${Date.now()}`
@@ -60,7 +60,7 @@ function formatTaskTime(value?: string | null) {
 }
 
 function statusLabel(status?: TaskStatus | null) {
-  return { running: '进行中', clarify: '待补充', completed: '已完成', failed: '失败', cancelled: '已取消' }[status ?? 'running']
+  return { queued: '排队中', running: '进行中', clarify: '待补充', success: '已完成', failed: '失败', cancelled: '已取消' }[status ?? 'running']
 }
 
 function findingTone(effect: number) {
@@ -70,9 +70,9 @@ function findingTone(effect: number) {
 }
 
 function toStoredResponse(task: AnalysisTaskDetail): AnalysisResponse | null {
-  if (task.status === 'completed' && task.report) {
+  if (task.status === 'success' && task.report) {
     return {
-      status: 'completed',
+      status: 'success',
       conversation_id: task.conversation_id,
       task_id: task.task_id,
       report: task.report,
@@ -476,8 +476,9 @@ function LegacyApp() {
 
   useEffect(() => {
     async function hydrateHistory() {
+      await waitForBackend()
       try {
-        const savedConversations = await listConversations()
+        const savedConversations = await withRetry(listConversations, 3, 600)
         setConversations(savedConversations)
         const activeConversation = savedConversations.find((item) => item.conversation_id === conversationId)
         if (activeConversation?.last_task_id) {
@@ -830,7 +831,7 @@ function LegacyApp() {
               </section>
             )}
 
-            {viewState === 'completed' && response?.status === 'completed' && <CompletedView response={response} />}
+            {viewState === 'success' && response?.status === 'success' && <CompletedView response={response} />}
           </div>
         </section>
       </main>
