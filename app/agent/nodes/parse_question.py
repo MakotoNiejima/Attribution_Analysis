@@ -57,6 +57,7 @@ def parse_question(state: AnalysisState) -> AnalysisState:
     try:
         # 解析JSON响应
         content = response.content
+        print(f"[DEBUG] LLM 原始响应: {content}")
         # 提取JSON部分
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
@@ -64,6 +65,7 @@ def parse_question(state: AnalysisState) -> AnalysisState:
             content = content.split("```")[1].split("```")[0]
 
         parsed = json.loads(content.strip())
+        print(f"[DEBUG] 解析后的 JSON: {parsed}")
 
         def parse_date(value: Optional[str]) -> Optional[datetime]:
             if not value:

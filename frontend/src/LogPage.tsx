@@ -7,10 +7,12 @@ type LogPageProps = {
 }
 
 type TaskLog = {
-  log_id: string
-  task_id: string
-  level: string
-  message: string
+  log_id?: string
+  task_id?: string
+  log_level: string
+  log_type: string
+  log_content: string
+  payload?: Record<string, unknown>
   created_at: string
 }
 
@@ -79,13 +81,14 @@ export function LogPage({ taskId, onBack }: LogPageProps) {
         </div>
       ) : (
         <div className="log-list">
-          {logs.map((log) => (
-            <div key={log.log_id} className="log-item">
+          {logs.map((log, index) => (
+            <div key={log.log_id || index} className="log-item">
               <span className="log-time">{formatTime(log.created_at)}</span>
-              <span className="log-level" style={{ color: levelColor(log.level) }}>
-                [{log.level.toUpperCase()}]
+              <span className="log-level" style={{ color: levelColor(log.log_level) }}>
+                [{log.log_level.toUpperCase()}]
               </span>
-              <span className="log-message">{log.message}</span>
+              <span className="log-type">[{log.log_type}]</span>
+              <span className="log-message">{log.log_content}</span>
             </div>
           ))}
         </div>

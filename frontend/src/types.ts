@@ -266,9 +266,19 @@ export type ChatTaskAccepted = {
 export type ChatStreamEvent = {
   type: 'message_start' | 'task_status' | 'tool_start' | 'tool_finish' | 'message_delta' | 'result_ready' | 'error' | 'done'
   task_id?: string
+  conversation_id?: string
+  task_status?: TaskStatus | 'running'
+  current_step?: string
+  tool_name?: string
+  tool_result_summary?: string
+  delta_text?: string
+  result_id?: string
+  error_message?: string
+  finished_at?: string
   status?: TaskStatus | 'running'
   node?: string
   label?: string
   message?: string
   response?: AnalysisResponse
+  timestamp?: string
 }

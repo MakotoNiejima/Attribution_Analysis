@@ -16,6 +16,11 @@ def build_request(state: AnalysisState) -> AnalysisState:
     print("[节点] 构造分析请求...")
 
     try:
+        print(f"[DEBUG] parsed_start: {state.parsed_start}")
+        print(f"[DEBUG] parsed_end: {state.parsed_end}")
+        print(f"[DEBUG] parsed_compare_start: {state.parsed_compare_start}")
+        print(f"[DEBUG] parsed_compare_end: {state.parsed_compare_end}")
+
         if not state.parsed_start or not state.parsed_end:
             raise ValueError("缺少当前分析周期")
 
@@ -23,6 +28,10 @@ def build_request(state: AnalysisState) -> AnalysisState:
         delta = state.parsed_end - state.parsed_start
         compare_start = state.parsed_compare_start or (state.parsed_start - delta)
         compare_end = state.parsed_compare_end or state.parsed_start
+
+        print(f"[DEBUG] delta: {delta}")
+        print(f"[DEBUG] compare_start: {compare_start}")
+        print(f"[DEBUG] compare_end: {compare_end}")
 
         def config_datetime(value: str) -> datetime:
             parsed = datetime.fromisoformat(value)
@@ -32,10 +41,17 @@ def build_request(state: AnalysisState) -> AnalysisState:
         data_start = datetime(2026, 4, 1, tzinfo=timezone.utc)
         data_end = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
+        print(f"[DEBUG] data_start: {data_start}")
+        print(f"[DEBUG] data_end: {data_end}")
+
         is_supported_window = (
             data_start <= compare_start < compare_end <= data_end
             and data_start <= state.parsed_start < state.parsed_end <= data_end
         )
+        print(f"[DEBUG] is_supported_window: {is_supported_window}")
+        print(f"[DEBUG] check1 (compare): {data_start <= compare_start < compare_end <= data_end}")
+        print(f"[DEBUG] check2 (current): {data_start <= state.parsed_start < state.parsed_end <= data_end}")
+
         if not is_supported_window:
             state.clarification_question = (
                 "当前演示数据覆盖 2026-04-01 至 2026-07-31。"

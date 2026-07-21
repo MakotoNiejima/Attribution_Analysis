@@ -18,7 +18,7 @@ class Base(DeclarativeBase):
 class AppUser(Base):
     """分析工作台用户；与业务明细表 biz_users 明确隔离。"""
 
-    __tablename__ = "app_users"
+    __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     external_user_id: Mapped[str | None] = mapped_column(String(120), nullable=True, unique=True, index=True)
@@ -34,11 +34,11 @@ class AppUser(Base):
 class AnalysisConversation(Base):
     """用户连续提问的会话容器。"""
 
-    __tablename__ = "analysis_conversations"
+    __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
@@ -68,15 +68,21 @@ class AnalysisTask(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("analysis_conversations.id", ondelete="CASCADE"),
+        String(64), ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    task_status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    current_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
     clarification_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     errors_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -106,6 +112,12 @@ class AnalysisResult(Base):
         nullable=False,
         unique=True,
     )
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     # 规范六段结构字段
     problem_definition: Mapped[str] = mapped_column(Text, nullable=False)
     key_metrics_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
@@ -113,6 +125,9 @@ class AnalysisResult(Base):
     conclusion_text: Mapped[str] = mapped_column(Text, nullable=False)
     missing_data_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     next_action_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 结果文件字段
+    result_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    result_file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 兼容字段（保留原有数据）
     report: Mapped[str] = mapped_column(Text, nullable=False)
     key_findings_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
@@ -129,17 +144,17 @@ class AnalysisResult(Base):
 class ChatMessage(Base):
     """会话中的用户消息、追问和最终报告消息。"""
 
-    __tablename__ = "chat_messages"
+    __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("analysis_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     task_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("analysis_tasks.id", ondelete="SET NULL"), nullable=True, index=True
     )
     user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     message_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text", index=True)
@@ -160,13 +175,16 @@ class Attachment(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("analysis_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
     )
     owner_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    stored_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     file_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
     parse_status: Mapped[str] = mapped_column(String(20), nullable=False, default="uploaded")
@@ -184,9 +202,11 @@ class ContextSummary(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("analysis_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    start_seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    end_seq_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
@@ -200,12 +220,20 @@ class WebsocketToken(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     task_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("analysis_tasks.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    token: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
@@ -214,8 +242,10 @@ class SystemConfig(Base):
 
     __tablename__ = "system_configs"
 
-    key: Mapped[str] = mapped_column(String(100), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    config_key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    config_value: Mapped[str] = mapped_column(Text, nullable=False)
+    config_group: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
@@ -229,9 +259,9 @@ class TaskLog(Base):
     task_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("analysis_tasks.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    level: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
-    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
+    log_level: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    log_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    log_content: Mapped[str] = mapped_column(Text, nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
@@ -239,6 +269,6 @@ class TaskLog(Base):
 
 
 Index("idx_analysis_tasks_conversation_created", AnalysisTask.conversation_id, AnalysisTask.created_at)
-Index("idx_analysis_conversations_updated", AnalysisConversation.updated_at)
-Index("idx_chat_messages_conversation_created", ChatMessage.conversation_id, ChatMessage.created_at)
+Index("idx_conversations_updated", AnalysisConversation.updated_at)
+Index("idx_messages_conversation_created", ChatMessage.conversation_id, ChatMessage.created_at)
 Index("idx_attachments_conversation_created", Attachment.conversation_id, Attachment.created_at)

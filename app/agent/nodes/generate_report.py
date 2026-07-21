@@ -37,56 +37,65 @@ def generate_report(state: AnalysisState) -> AnalysisState:
             )[:4000]
 
         # 根据分析类型生成不同的报告
-        if state.analysis_type == "market":
+        # 优先检查市场表现分析的特征字段
+        is_market_analysis = (
+            state.analysis_type == "market" or 
+            "baseline_summary" in result or 
+            "channel_changes" in result
+        )
+        
+        if is_market_analysis:
             # 市场表现分析报告
-            baseline_summary = result["baseline_summary"]
-            current_summary = result["current_summary"]
-            channel_changes = result["channel_changes"]
+            baseline_summary = result.get("baseline_summary", {})
+            current_summary = result.get("current_summary", {})
+            channel_changes = result.get("channel_changes", [])
             abnormal_channels = result.get("abnormal_channels", [])
 
             # 整体指标
-            baseline_roi = baseline_summary["overall_roi"]
-            current_roi = current_summary["overall_roi"]
+            baseline_roi = baseline_summary.get("overall_roi", 0.0)
+            current_roi = current_summary.get("overall_roi", 0.0)
             roi_change = current_roi - baseline_roi
 
             # 渠道效率对比
             channel_lines = []
-            for change in sorted(channel_changes, key=lambda x: abs(x["roi_change_rate"]), reverse=True):
-                channel = change["channel"]
-                baseline_roi_val = change["baseline"]["roi"]
-                current_roi_val = change["current"]["roi"]
-                roi_change_val = change["roi_change"]
-                roi_change_rate = change["roi_change_rate"]
-                ad_spend = change["current"]["ad_spend"]
-                revenue = change["current"]["revenue"]
+            for change in sorted(channel_changes, key=lambda x: abs(x.get("roi_change_rate", 0)), reverse=True):
+                channel = change.get("channel", "未知")
+                baseline_roi_val = change.get("baseline", {}).get("roi", 0.0)
+                current_roi_val = change.get("current", {}).get("roi", 0.0)
+                roi_change_val = change.get("roi_change", 0.0)
+                roi_change_rate = change.get("roi_change_rate", 0.0)
+                ad_spend = change.get("current", {}).get("ad_spend", 0.0)
+                revenue = change.get("current", {}).get("revenue", 0.0)
                 
-                abnormal_mark = " [异常]" if any(ac["channel"] == channel for ac in abnormal_channels) else ""
+                abnormal_mark = " [异常]" if any(ac.get("channel") == channel for ac in abnormal_channels) else ""
                 channel_lines.append(
                     f"- {channel}{abnormal_mark}: ROI {baseline_roi_val:.2f} → {current_roi_val:.2f} "
                     f"(变化 {roi_change_val:+.2f}, 变化率 {roi_change_rate:+.2%}), "
                     f"广告花费 ¥{ad_spend:,.2f}, 收入 ¥{revenue:,.2f}"
                 )
-            channel_breakdown = "\n".join(channel_lines)
+            channel_breakdown = "\n".join(channel_lines) if channel_lines else "无渠道数据"
 
             # 异常渠道
             if abnormal_channels:
                 abnormal_lines = []
                 for ac in abnormal_channels:
                     abnormal_lines.append(
-                        f"- {ac['channel']}: ROI 下降 {ac['roi_change_rate']:.2%}, "
-                        f"广告花费变化 ¥{ac['ad_spend_change']:+,.2f}, "
-                        f"收入变化 ¥{ac['revenue_change']:+,.2f}"
+                        f"- {ac.get('channel', '未知')}: ROI 下降 {ac.get('roi_change_rate', 0):.2%}, "
+                        f"广告花费变化 ¥{ac.get('ad_spend_change', 0):+,.2f}, "
+                        f"收入变化 ¥{ac.get('revenue_change', 0):+,.2f}"
                     )
                 abnormal_breakdown = "\n".join(abnormal_lines)
             else:
                 abnormal_breakdown = "无显著异常渠道"
 
             # 时间范围
-            baseline_period = f"{result['baseline_period']['start']} ~ {result['baseline_period']['end']}"
-            current_period = f"{result['current_period']['start']} ~ {result['current_period']['end']}"
+            baseline_period_data = result.get("baseline_period", {})
+            current_period_data = result.get("current_period", {})
+            baseline_period = f"{baseline_period_data.get('start', 'N/A')} ~ {baseline_period_data.get('end', 'N/A')}"
+            current_period = f"{current_period_data.get('start', 'N/A')} ~ {current_period_data.get('end', 'N/A')}"
 
             prompt = GENERATE_REPORT_PROMPT.format(
-                problem=state.parsed_problem,
+                problem=state.parsed_problem or "各渠道的 ROI 表现如何？",
                 baseline_period=baseline_period,
                 current_period=current_period,
                 baseline_rate=f"{baseline_roi:.2f}",

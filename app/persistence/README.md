@@ -3,7 +3,7 @@
 数据库中的三层关系如下：
 
 ```text
-analysis_conversations (一个连续提问的会话)
+conversations (一个连续提问的会话)
   └── analysis_tasks (一次分析请求及其终态)
         └── analysis_results (仅保存证据校验通过的最终结果)
 ```

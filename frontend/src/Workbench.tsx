@@ -187,7 +187,6 @@ function Workbench() {
         // 处理流式文本增量
         if (event.type === 'message_delta' && event.delta_text) {
           streamingContent += event.delta_text
-          // 创建一个临时的流式结果显示
           setSelectedResult({
             status: 'completed',
             conversation_id: '',
@@ -200,11 +199,20 @@ function Workbench() {
           })
         }
         
-        if (event.type === 'result_ready' && event.response) {
-          setSelectedResult(event.response)
-          streamingContent = '' // 重置流式内容
+        // result_ready 时从后端获取完整结果
+        if (event.type === 'result_ready') {
+          if (event.response) {
+            setSelectedResult(event.response)
+          } else {
+            // 后端可能没有内嵌 response，需要主动拉取
+            void getWorkbenchTask(taskId).then((task) => {
+              const r = responseFromTask(task)
+              if (r) setSelectedResult(r)
+            }).catch(() => {})
+          }
+          streamingContent = ''
         }
-        if (event.type === 'error') setNotice(event.message ?? '实时任务发生错误')
+        if (event.type === 'error') setNotice(event.error_message ?? event.message ?? '实时任务发生错误')
         if (event.type === 'done') {
           setActiveTaskId(null)
           void reloadActiveConversation().catch((reason) => setNotice(reason instanceof Error ? reason.message : '任务已完成，但历史刷新失败'))

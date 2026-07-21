@@ -31,7 +31,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
 3. 前端通过 WebSocket 订阅 LangGraph 节点和归因计算细节；浏览器晚于任务连接时会补发已缓存事件。
 4. 左侧“会话历史”展示持久化会话；打开任意任务可回放已保存的报告和结构化结果。
 
-首次启动后端时会自动创建 `analysis_conversations`、`analysis_tasks`、`analysis_results` 三张表，业务数据表不会被修改。
+首次启动后端时会自动创建 `conversations`、`analysis_tasks`、`analysis_results` 三张表，业务数据表不会被修改。
 
 如果前端和 API 不在同一域名，除了 `VITE_API_BASE_URL` 外，还可以在 `frontend/.env.local` 配置 WebSocket 基地址：
 

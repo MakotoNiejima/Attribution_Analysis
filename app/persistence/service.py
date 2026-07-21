@@ -80,20 +80,54 @@ class AnalysisPersistenceService:
         Base.metadata.create_all(self.engine)
 
     def _migrate_legacy_columns(self) -> None:
-        """只追加可空列或带默认值的列，兼容已经创建好的 MySQL 数据库。"""
+        """处理表重命名、列重命名和新增列，兼容已经创建好的 MySQL 数据库。"""
         dialect = self.engine.dialect.name
         type_boolean = "BOOLEAN NOT NULL DEFAULT FALSE" if dialect == "mysql" else "BOOLEAN NOT NULL DEFAULT 0"
+        
+        # 表重命名映射 (old_name, new_name)
+        table_renames = {
+            "app_users": "users",
+            "analysis_conversations": "conversations",
+            "chat_messages": "messages",
+        }
+        
+        # 列重命名映射 (old_name, new_name, column_type)
+        renames = {
+            "analysis_tasks": {
+                "question": ("input_text", "TEXT"),
+                "status": ("task_status", "VARCHAR(16) NOT NULL DEFAULT 'queued'"),
+                "current_node": ("current_step", "VARCHAR(64)"),
+            },
+            "attachments": {
+                "filename": ("file_name", "VARCHAR(255) NOT NULL"),
+                "stored_path": ("file_path", "VARCHAR(500) NOT NULL"),
+            },
+            "task_logs": {
+                "level": ("log_level", "VARCHAR(16) NOT NULL"),
+                "event_type": ("log_type", "VARCHAR(40) NOT NULL"),
+                "message": ("log_content", "TEXT NOT NULL"),
+            },
+            "context_summaries": {
+                "summary": ("summary_text", "TEXT NOT NULL"),
+            },
+        }
+        
+        # 新增列
         additions = {
-            "analysis_conversations": {
+            "conversations": {
                 "owner_id": "VARCHAR(64)",
                 "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
                 "last_message_at": "DATETIME",
             },
             "analysis_tasks": {
                 "cancel_requested": type_boolean,
-                "current_node": "VARCHAR(64)",
+                "user_id": "VARCHAR(64)",
+                "error_message": "TEXT",
             },
             "analysis_results": {
+                "conversation_id": "VARCHAR(64)",
+                "result_markdown": "TEXT",
+                "result_file_path": "VARCHAR(500)",
                 "export_path": "VARCHAR(500)",
                 "exported_at": "DATETIME",
                 "problem_definition": "TEXT",
@@ -103,20 +137,64 @@ class AnalysisPersistenceService:
                 "missing_data_text": "TEXT",
                 "next_action_text": "TEXT",
             },
-            "app_users": {
+            "users": {
                 "external_user_id": "VARCHAR(120)",
                 "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
             },
-            "chat_messages": {
+            "messages": {
                 "message_type": "VARCHAR(32) NOT NULL DEFAULT 'text'",
                 "tool_name": "VARCHAR(64)",
                 "tool_status": "VARCHAR(20)",
                 "seq_no": "INT NOT NULL DEFAULT 0",
             },
+            "attachments": {
+                "message_id": "VARCHAR(64)",
+            },
+            "context_summaries": {
+                "start_seq_no": "INT NOT NULL DEFAULT 0",
+                "end_seq_no": "INT NOT NULL DEFAULT 0",
+            },
         }
         inspector = inspect(self.engine)
         table_names = set(inspector.get_table_names())
+        
+        # 第一步：处理表重命名（在独立事务中执行）
+        tables_renamed = []
         with self.engine.begin() as connection:
+            for old_name, new_name in table_renames.items():
+                if old_name in table_names and new_name not in table_names:
+                    connection.execute(text(f"ALTER TABLE {old_name} RENAME TO {new_name}"))
+                    tables_renamed.append((old_name, new_name))
+        
+        # 更新表名列表
+        for old_name, new_name in tables_renamed:
+            table_names.remove(old_name)
+            table_names.add(new_name)
+        
+        # 重新获取 inspector 以反映表重命名后的状态
+        inspector = inspect(self.engine)
+        
+        # 第二步：处理列重命名和新增列
+        with self.engine.begin() as connection:
+            # 处理列重命名
+            for table_name, column_map in renames.items():
+                if table_name not in table_names:
+                    continue
+                existing = {column["name"] for column in inspector.get_columns(table_name)}
+                for old_name, (new_name, column_type) in column_map.items():
+                    if old_name in existing and new_name not in existing:
+                        if dialect == "mysql":
+                            # MySQL 使用 CHANGE COLUMN
+                            connection.execute(
+                                text(f"ALTER TABLE {table_name} CHANGE COLUMN {old_name} {new_name} {column_type}")
+                            )
+                        else:
+                            # PostgreSQL 使用 RENAME COLUMN
+                            connection.execute(
+                                text(f"ALTER TABLE {table_name} RENAME COLUMN {old_name} TO {new_name}")
+                            )
+            
+            # 处理新增列
             for table_name, columns in additions.items():
                 if table_name not in table_names:
                     continue
@@ -130,14 +208,14 @@ class AnalysisPersistenceService:
     def fail_interrupted_tasks(self) -> int:
         """服务启动后收束上次进程异常退出时遗留的 running 任务。"""
         now = utc_now()
-        reason = ["服务在任务执行期间重启，请重新发起分析。"]
+        reason = "服务在任务执行期间重启，请重新发起分析。"
         with self.session_factory.begin() as session:
             result = session.execute(
                 update(AnalysisTask)
-                .where(AnalysisTask.status == "running")
+                .where(AnalysisTask.task_status == "running")
                 .values(
-                    status="failed",
-                    errors_json=reason,
+                    task_status="failed",
+                    error_message=reason,
                     finished_at=now,
                     updated_at=now,
                 )
@@ -157,9 +235,10 @@ class AnalysisPersistenceService:
         task = AnalysisTask(
             id=str(uuid4()),
             conversation_id=resolved_conversation_id,
-            question=question,
-            status="running",
-            errors_json=[],
+            user_id=owner_id,
+            input_text=question,
+            task_status="running",
+            current_step=None,
             started_at=now,
             created_at=now,
             updated_at=now,
@@ -186,7 +265,7 @@ class AnalysisPersistenceService:
                 running_count = session.execute(
                     select(func.count()).select_from(AnalysisTask).where(
                         AnalysisTask.conversation_id == resolved_conversation_id,
-                        AnalysisTask.status == "running",
+                        AnalysisTask.task_status == "running",
                     )
                 ).scalar() or 0
                 if running_count > 0:
@@ -235,9 +314,9 @@ class AnalysisPersistenceService:
             if task is None:
                 raise TaskNotFoundError(task_id)
 
-            task.status = status
+            task.task_status = status
             task.clarification_question = clarification_question if status == "clarify" else None
-            task.errors_json = to_jsonable(errors or [])
+            task.error_message = "; ".join(errors) if errors else None
             task.finished_at = now
             task.updated_at = now
             task.conversation.updated_at = now
@@ -251,7 +330,7 @@ class AnalysisPersistenceService:
                     session.flush()
                 
                 # 生成规范六段结构
-                problem_definition = task.question
+                problem_definition = task.input_text
                 key_metrics = self._extract_key_metrics(analysis_result or {})
                 evidence_list = self._extract_evidence_list(analysis_result or {}, matched_events or [])
                 conclusion_text = self._extract_conclusion(report, key_findings or [])
@@ -261,6 +340,7 @@ class AnalysisPersistenceService:
                 session.add(
                     AnalysisResult(
                         task_id=task.id,
+                        conversation_id=task.conversation_id,
                         # 规范六段结构
                         problem_definition=problem_definition,
                         key_metrics_json=to_jsonable(key_metrics),
@@ -268,6 +348,9 @@ class AnalysisPersistenceService:
                         conclusion_text=conclusion_text,
                         missing_data_text=missing_data_text,
                         next_action_text=next_action_text,
+                        # 结果文件字段
+                        result_markdown=report,
+                        result_file_path=None,
                         # 兼容字段
                         report=report,
                         key_findings_json=to_jsonable(key_findings or []),
@@ -305,9 +388,9 @@ class AnalysisPersistenceService:
             session.add(
                 TaskLog(
                     task_id=task.id,
-                    level="error" if status == "failed" else "info",
-                    event_type="task_finished",
-                    message=f"任务状态变更为 {status}",
+                    log_level="error" if status == "failed" else "info",
+                    log_type="task_finished",
+                    log_content=f"任务状态变更为 {status}",
                     payload_json={"status": status},
                     created_at=now,
                 )
@@ -342,7 +425,7 @@ class AnalysisPersistenceService:
                     "title": conversation.title,
                     "task_count": task_count,
                     "last_task_id": last_task.id if last_task else None,
-                    "last_task_status": last_task.status if last_task else None,
+                    "last_task_status": last_task.task_status if last_task else None,
                     "status": conversation.status,
                     "owner_id": conversation.owner_id,
                     "last_message_at": conversation.last_message_at,
@@ -397,7 +480,7 @@ class AnalysisPersistenceService:
             context: list[dict[str, Any]] = []
             for task in tasks:
                 summary: str | None = None
-                if task.status == "success" and task.result:
+                if task.task_status == "success" and task.result:
                     findings = task.result.key_findings_json or []
                     parts = []
                     for f in findings[:3]:
@@ -409,8 +492,8 @@ class AnalysisPersistenceService:
                     summary = "；".join(parts) if parts else report_snippet
 
                 context.append({
-                    "question": task.question,
-                    "status": task.status,
+                    "question": task.input_text,
+                    "status": task.task_status,
                     "clarification_question": task.clarification_question,
                     "key_findings_summary": summary,
                 })
@@ -458,16 +541,16 @@ class AnalysisPersistenceService:
             if task is None:
                 raise TaskNotFoundError(task_id)
             self._assert_conversation_access(task.conversation, owner_id)
-            if task.status != "running":
+            if task.task_status != "running":
                 return self._task_summary(task)
             task.cancel_requested = True
             task.updated_at = utc_now()
             session.add(
                 TaskLog(
                     task_id=task.id,
-                    level="info",
-                    event_type="cancel_requested",
-                    message="用户请求取消任务",
+                    log_level="info",
+                    log_type="cancel_requested",
+                    log_content="用户请求取消任务",
                     payload_json={},
                     created_at=utc_now(),
                 )
@@ -484,7 +567,7 @@ class AnalysisPersistenceService:
             task = session.get(AnalysisTask, task_id)
             if task is None or task.result is None:
                 raise TaskNotFoundError(task_id)
-            task.result.export_path = path
+            task.result.result_file_path = path
             task.result.exported_at = utc_now()
 
     def get_or_create_user(
@@ -578,7 +661,7 @@ class AnalysisPersistenceService:
         """删除会话记录并返回需由文件层清理的附件绝对路径。"""
         with self.session_factory.begin() as session:
             conversation = self._get_conversation_for_update(session, conversation_id, owner_id)
-            paths = [attachment.stored_path for attachment in conversation.attachments]
+            paths = [attachment.file_path for attachment in conversation.attachments]
             session.delete(conversation)
             return paths
 
@@ -597,17 +680,36 @@ class AnalysisPersistenceService:
                 .order_by(ChatMessage.created_at.asc())
                 .limit(normalized_limit)
             ).all()
-            return [
-                {
+
+            result = []
+            for message in messages:
+                # 查询该消息关联的附件
+                message_attachments = session.scalars(
+                    select(Attachment)
+                    .where(Attachment.message_id == message.id)
+                ).all()
+
+                attachments_list = [
+                    {
+                        "attachment_id": att.id,
+                        "file_name": att.file_name,
+                        "file_type": att.file_type,
+                        "file_size": att.file_size,
+                        "parse_status": att.parse_status,
+                    }
+                    for att in message_attachments
+                ]
+
+                result.append({
                     "message_id": message.id,
                     "task_id": message.task_id,
                     "role": message.role,
                     "content": message.content,
                     "metadata": message.metadata_json or {},
+                    "attachments": attachments_list,
                     "created_at": message.created_at,
-                }
-                for message in messages
-            ]
+                })
+            return result
 
     def create_attachment(
         self,
@@ -629,8 +731,8 @@ class AnalysisPersistenceService:
                 id=attachment_id,
                 conversation_id=conversation_id,
                 owner_id=owner_id,
-                filename=filename[:255],
-                stored_path=stored_path,
+                file_name=filename[:255],
+                file_path=stored_path,
                 file_type=file_type[:32],
                 file_size=file_size,
                 parse_status=parse_status[:20],
@@ -669,7 +771,7 @@ class AnalysisPersistenceService:
             if attachment is None:
                 raise TaskNotFoundError(attachment_id)
             self._assert_conversation_access(attachment.conversation, owner_id)
-            path = attachment.stored_path
+            path = attachment.file_path
             session.delete(attachment)
             return path
 
@@ -680,7 +782,7 @@ class AnalysisPersistenceService:
             if attachment is None:
                 raise TaskNotFoundError(attachment_id)
             self._assert_conversation_access(attachment.conversation, owner_id)
-            return attachment.stored_path, attachment.filename
+            return attachment.file_path, attachment.file_name
 
     def get_task_attachments(self, conversation_id: str) -> list[dict[str, Any]]:
         """供图节点读取；附件元数据仍由主数据库作为事实来源。"""
@@ -704,14 +806,14 @@ class AnalysisPersistenceService:
             if task is None:
                 return
             if event_type == "node_started" and payload:
-                task.current_node = str(payload.get("node") or "")[:64] or None
+                task.current_step = str(payload.get("node") or "")[:64] or None
                 task.updated_at = utc_now()
             session.add(
                 TaskLog(
                     task_id=task_id,
-                    level=level[:16],
-                    event_type=event_type[:40],
-                    message=message,
+                    log_level=level[:16],
+                    log_type=event_type[:40],
+                    log_content=message,
                     payload_json=to_jsonable(payload or {}),
                     created_at=utc_now(),
                 )
@@ -729,16 +831,16 @@ class AnalysisPersistenceService:
             ).all()
             return [
                 {
-                    "level": log.level,
-                    "event_type": log.event_type,
-                    "message": log.message,
+                    "log_level": log.log_level,
+                    "log_type": log.log_type,
+                    "log_content": log.log_content,
                     "payload": log.payload_json or {},
                     "created_at": log.created_at,
                 }
                 for log in logs
             ]
 
-    def save_context_summary(self, conversation_id: str, summary: str, message_count: int) -> None:
+    def save_context_summary(self, conversation_id: str, summary: str, message_count: int, start_seq_no: int = 0, end_seq_no: int = 0) -> None:
         if not summary.strip():
             return
         with self.session_factory.begin() as session:
@@ -747,7 +849,9 @@ class AnalysisPersistenceService:
             session.add(
                 ContextSummary(
                     conversation_id=conversation_id,
-                    summary=summary.strip(),
+                    start_seq_no=start_seq_no,
+                    end_seq_no=end_seq_no,
+                    summary_text=summary.strip(),
                     message_count=message_count,
                     created_at=utc_now(),
                 )
@@ -755,18 +859,18 @@ class AnalysisPersistenceService:
 
     def set_system_config(self, key: str, value: str, updated_by: str | None = None) -> None:
         with self.session_factory.begin() as session:
-            config = session.get(SystemConfig, key)
+            config = session.scalar(select(SystemConfig).where(SystemConfig.config_key == key))
             if config is None:
-                config = SystemConfig(key=key, value=value, updated_by=updated_by, updated_at=utc_now())
+                config = SystemConfig(config_key=key, config_value=value, updated_by=updated_by, updated_at=utc_now())
                 session.add(config)
             else:
-                config.value = value
+                config.config_value = value
                 config.updated_by = updated_by
                 config.updated_at = utc_now()
 
     def get_system_configs(self) -> dict[str, str]:
         with self.session_factory() as session:
-            return {item.key: item.value for item in session.scalars(select(SystemConfig)).all()}
+            return {item.config_key: item.config_value for item in session.scalars(select(SystemConfig)).all()}
 
     def create_websocket_token(self, user_id: str, task_id: str, ttl_seconds: int = 300) -> str:
         token = str(uuid4())
@@ -776,24 +880,40 @@ class AnalysisPersistenceService:
             if task is None:
                 raise TaskNotFoundError(task_id)
             self._assert_conversation_access(task.conversation, user_id)
-            session.add(WebsocketToken(id=token, user_id=user_id, task_id=task_id, expires_at=expires_at))
+            session.add(WebsocketToken(
+                id=str(uuid4()),
+                user_id=user_id,
+                conversation_id=task.conversation_id,
+                task_id=task_id,
+                token=token,
+                expires_at=expires_at,
+            ))
         return token
 
     def verify_websocket_token(self, token: str, user_id: str, task_id: str) -> bool:
         with self.session_factory() as session:
-            record = session.get(WebsocketToken, token)
+            record = session.scalar(
+                select(WebsocketToken).where(WebsocketToken.token == token)
+            )
             return bool(
                 record
                 and record.user_id == user_id
                 and record.task_id == task_id
                 and record.expires_at >= utc_now()
+                and record.consumed_at is None
             )
 
     def verify_websocket_token_for_task(self, token: str, task_id: str) -> bool:
         """WebSocket 使用短期能力令牌；令牌已在签发时绑定用户和任务。"""
         with self.session_factory() as session:
-            record = session.get(WebsocketToken, token)
-            return bool(record and record.task_id == task_id and record.expires_at >= utc_now())
+            record = session.scalar(
+                select(WebsocketToken).where(WebsocketToken.token == token)
+            )
+            return bool(
+                record
+                and record.task_id == task_id
+                and record.expires_at >= utc_now()
+            )
 
     @staticmethod
     def _assistant_message_content(
@@ -822,7 +942,8 @@ class AnalysisPersistenceService:
         return {
             "id": attachment.id,
             "conversation_id": attachment.conversation_id,
-            "filename": attachment.filename,
+            "file_name": attachment.file_name,
+            "file_path": attachment.file_path,
             "file_type": attachment.file_type,
             "file_size": attachment.file_size,
             "parse_status": attachment.parse_status,
@@ -843,7 +964,7 @@ class AnalysisPersistenceService:
             "owner_id": conversation.owner_id,
             "task_count": task_count if task_count is not None else 0,
             "last_task_id": last_task.id if last_task else None,
-            "last_task_status": last_task.status if last_task else None,
+            "last_task_status": last_task.task_status if last_task else None,
             "created_at": conversation.created_at,
             "updated_at": conversation.updated_at,
         }
@@ -869,13 +990,26 @@ class AnalysisPersistenceService:
 
     @staticmethod
     def _task_summary(task: AnalysisTask) -> dict[str, Any]:
+        # Map backend status to frontend status for compatibility
+        status_mapping = {
+            "success": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+            "clarify": "clarify",
+            "running": "running",
+            "queued": "running",
+        }
+        frontend_status = status_mapping.get(task.task_status, task.task_status)
+        
         return {
             "task_id": task.id,
             "conversation_id": task.conversation_id,
-            "question": task.question,
-            "status": task.status,
-            "current_step": task.current_node,
+            "input_text": task.input_text,
+            "task_status": task.task_status,
+            "status": frontend_status,
+            "current_step": task.current_step,
             "cancel_requested": task.cancel_requested,
+            "error_message": task.error_message,
             "created_at": task.created_at,
             "started_at": task.started_at,
             "finished_at": task.finished_at,

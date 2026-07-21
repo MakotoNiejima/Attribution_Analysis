@@ -186,12 +186,24 @@ export async function uploadAttachment(conversationId: string, file: File): Prom
   const form = new FormData()
   form.append('conversation_id', conversationId)
   form.append('file', file)
-  const response = await fetch(`${apiBaseUrl}/attachments/upload`, {
+  // 使用规范接口路径 /api/attachment/upload
+  const response = await fetch(`${workbenchBaseUrl}/attachment/upload`, {
     method: 'POST', credentials: 'include', body: form,
   })
   const payload: unknown = await response.json().catch(() => null)
   if (!response.ok) throw new Error(readError(payload))
-  return (payload as { attachment: WorkspaceAttachment }).attachment
+  // 规范接口返回 attachment_id, file_name, file_path
+  const result = payload as { attachment_id: string; file_name: string; file_path: string; status: string }
+  return {
+    id: result.attachment_id,
+    conversation_id: conversationId,
+    filename: result.file_name,
+    file_type: file.type || 'application/octet-stream',
+    file_size: file.size,
+    parse_status: 'uploaded',
+    parse_summary: {},
+    created_at: new Date().toISOString(),
+  }
 }
 
 export function deleteAttachment(attachmentId: string): Promise<void> {

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -208,7 +208,21 @@ async def get_task_logs(task_id: str, current_user: dict[str, Any] = Depends(get
 
 @router.get("/results/{task_id}")
 async def get_result(task_id: str, current_user: dict[str, Any] = Depends(get_current_user)):
-    return await get_authorized_task(task_id, current_user)
+    """返回分析结果，按规范六段结构格式"""
+    service = get_persistence_service()
+    try:
+        task = await run_in_threadpool(service.get_task_for_user, task_id, current_user["user_id"])
+        # 按需求文档 1.1.9 返回六段结构
+        return {
+            "problem_definition": task.get("problem_definition"),
+            "key_metrics": task.get("key_metrics", []),
+            "evidence_list": task.get("evidence_list", []),
+            "conclusion_text": task.get("conclusion_text"),
+            "missing_data_text": task.get("missing_data_text"),
+            "next_action_text": task.get("next_action_text"),
+        }
+    except (TaskNotFoundError, ConversationAccessError) as exc:
+        raise HTTPException(status_code=404, detail="结果不存在或无权访问") from exc
 
 
 @router.get("/results/{task_id}/export")
@@ -216,7 +230,7 @@ async def export_result(task_id: str, current_user: dict[str, Any] = Depends(get
     service = get_persistence_service()
     try:
         task = await run_in_threadpool(service.get_task_for_user, task_id, current_user["user_id"])
-        if task["status"] != "success" or not task.get("report"):
+        if task["task_status"] != "success" or not task.get("report"):
             raise HTTPException(status_code=409, detail="只有已完成且验证通过的分析结果可以导出")
         destination = export_path(
             user_id=current_user["user_id"],
@@ -240,7 +254,13 @@ async def create_ws_token(
             current_user["user_id"],
             request.task_id,
         )
-        return {"task_id": request.task_id, "token": token, "expires_in": 300}
+        # 同时返回 websocket_token 和 token 以兼容不同前端实现
+        return {
+            "task_id": request.task_id,
+            "websocket_token": token,
+            "token": token,
+            "expires_in": 300
+        }
     except (TaskNotFoundError, ConversationAccessError) as exc:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问") from exc
 
@@ -248,26 +268,89 @@ async def create_ws_token(
 def _chat_event(event: dict[str, Any]) -> list[dict[str, Any]]:
     """将原有节点进度兼容为课程约定的 WebSocket 事件类型。"""
     event_type = event.get("type")
+    task_id = event.get("task_id", "")
+    
     if event_type == "task_started":
-        return [{**event, "type": "task_status", "status": "running"}]
+        return [{
+            "type": "task_status",
+            "task_id": task_id,
+            "task_status": "running",
+            "current_step": event.get("node", "start"),
+            "timestamp": event.get("timestamp")
+        }]
     if event_type == "node_started":
-        return [{**event, "type": "tool_start"}]
+        return [{
+            "type": "tool_start",
+            "task_id": task_id,
+            "tool_name": event.get("node", ""),
+            "timestamp": event.get("timestamp")
+        }]
     if event_type == "node_completed":
-        return [{**event, "type": "tool_finish"}]
+        return [{
+            "type": "tool_finish",
+            "task_id": task_id,
+            "tool_name": event.get("node", ""),
+            "tool_result_summary": event.get("result_summary", "执行完成"),
+            "timestamp": event.get("timestamp")
+        }]
+    if event_type == "message_delta":
+        return [{
+            "type": "message_delta",
+            "task_id": task_id,
+            "delta_text": event.get("delta_text", ""),
+            "timestamp": event.get("timestamp")
+        }]
     if event_type == "terminal":
         response = event.get("response") or {}
+        task_status = response.get("task_status", event.get("status", "completed"))
+        finished_at = response.get("finished_at", event.get("timestamp"))
+        result_id = response.get("result_id", task_id)
+        
         return [
-            {**event, "type": "result_ready", "response": response},
-            {**event, "type": "done", "status": response.get("status", event.get("status"))},
+            {
+                "type": "result_ready",
+                "task_id": task_id,
+                "result_id": result_id,
+                "timestamp": event.get("timestamp")
+            },
+            {
+                "type": "done",
+                "task_id": task_id,
+                "task_status": task_status,
+                "finished_at": finished_at,
+                "timestamp": event.get("timestamp")
+            },
         ]
+    if event_type == "error":
+        return [{
+            "type": "error",
+            "task_id": task_id,
+            "error_message": event.get("message", "未知错误"),
+            "timestamp": event.get("timestamp")
+        }]
     return [event]
 
 
 @router.websocket("/chat/ws/chat")
-async def stream_chat(websocket: WebSocket, task_id: str, token: str):
-    """使用短期任务令牌订阅实时过程；过程事件与最终结果可断线后回放。"""
+async def stream_chat(
+    websocket: WebSocket,
+    task_id: str,
+    websocket_token: str | None = None,
+    token: str | None = None,
+    conversation_id: str | None = None,
+):
+    """使用短期任务令牌订阅实时过程；过程事件与最终结果可断线后回放。
+    
+    支持两种参数名：websocket_token（规范）或 token（兼容旧版）。
+    """
+    # 兼容 websocket_token 和 token 两种参数名
+    auth_token = websocket_token or token
+    if not auth_token:
+        await websocket.close(code=4401)
+        return
+    
     service = get_persistence_service()
-    if not await run_in_threadpool(service.verify_websocket_token_for_task, token, task_id):
+    if not await run_in_threadpool(service.verify_websocket_token_for_task, auth_token, task_id):
         await websocket.close(code=4401)
         return
     await websocket.accept()
@@ -278,13 +361,22 @@ async def stream_chat(websocket: WebSocket, task_id: str, token: str):
         await websocket.close(code=4404)
         return
 
-    await websocket.send_json({"type": "message_start", "task_id": task_id})
+    await websocket.send_json({
+        "type": "message_start",
+        "task_id": task_id,
+        "conversation_id": detail.get("conversation_id", "")
+    })
     manager = get_task_runtime_manager()
     subscription = await manager.subscribe(task_id)
     if subscription is None:
-        if detail["status"] != "running":
+        task_status = detail.get("task_status", detail.get("status", "unknown"))
+        if task_status != "running":
             await websocket.send_json(jsonable_encoder({"type": "result_ready", "response": detail}))
-            await websocket.send_json({"type": "done", "status": detail["status"]})
+            await websocket.send_json({
+                "type": "done",
+                "task_id": task_id,
+                "finished_at": detail.get("finished_at")
+            })
             await websocket.close(code=1000)
             return
         await websocket.send_json({"type": "error", "message": "实时进程已重启，请刷新任务状态"})
@@ -316,7 +408,7 @@ async def reload_config(current_user: dict[str, Any] = Depends(get_current_user)
     require_admin(current_user)
     app_config.reload_runtime_config()
     config = app_config.apply_runtime_overrides(get_persistence_service().get_system_configs())
-    return {"status": "ok", "config": config}
+    return {"status": "ok", "message": "配置已重载", "config": config}
 
 
 @router.get("/admin/config")
@@ -406,3 +498,23 @@ async def get_attachment_compat(
     """获取附件信息（兼容规范接口）"""
     from app.api.attachments import get_attachment_detail
     return await get_attachment_detail(attachment_id, current_user)
+
+
+@router.post("/attachment/upload")
+async def upload_attachment_compat(
+    file: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """上传附件（兼容规范接口）"""
+    from app.api.attachments import upload_attachment as _upload
+    result = await _upload(file, conversation_id, current_user)
+    # 返回符合规范格式的响应
+    attachment = result.get("attachment", {})
+    return {
+        "attachment_id": attachment.get("id"),
+        "file_name": attachment.get("filename"),
+        "file_path": attachment.get("stored_path"),
+        "status": "ok",
+        "message": result.get("message", ""),
+    }
