@@ -44,8 +44,42 @@ def run_analysis(state: AnalysisState) -> AnalysisState:
             )
             state.analysis_result = result.to_dict()
             state.analysis_type = "market"
-            # 市场表现分析没有 evidence 和 matched_events 字段
-            state.evidence = None
+
+            # 为市场表现分析生成 evidence 结构
+            result_dict = result.to_dict()
+            evidence = {
+                "metrics": [
+                    {
+                        "metric_name": "基准期整体ROI",
+                        "metric_value": result_dict["baseline_summary"]["overall_roi"],
+                        "metric_unit": "",
+                        "metric_period": "baseline"
+                    },
+                    {
+                        "metric_name": "当前期整体ROI",
+                        "metric_value": result_dict["current_summary"]["overall_roi"],
+                        "metric_unit": "",
+                        "metric_period": "current"
+                    }
+                ],
+                "dimension_evidences": [],
+                "business_events": [],
+                "attachment_evidence": []
+            }
+
+            # 添加各渠道效率变化作为维度证据
+            for change in result_dict["channel_changes"]:
+                evidence["dimension_evidences"].append({
+                    "dimension_name": "渠道",
+                    "group_name": change["channel"],
+                    "metric_name": "ROI",
+                    "baseline_value": change["baseline"]["roi"],
+                    "current_value": change["current"]["roi"],
+                    "change_value": change["roi_change"],
+                    "effect_value": change["roi_change_rate"]
+                })
+
+            state.evidence = evidence
             state.matched_events = []
         else:
             # 转化率分析（默认）
